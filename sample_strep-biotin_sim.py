@@ -149,11 +149,20 @@ integrator.methods.append(nvt)
 
 simulation.operations.integrator = integrator
 
+# periodically write frames to a trajectory over the whole run, instead of
+# only writing the final state once the run finishes
+trajectory_writer = hoomd.write.GSD(
+    filename="trajectory.gsd",
+    trigger=hoomd.trigger.Periodic(100),
+    mode="wb",
+)
+simulation.operations.writers.append(trajectory_writer)
+
 simulation.state.thermalize_particle_momenta(filter=hoomd.filter.All(), kT=1.5)
 
 simulation.run(10000)
+del trajectory_writer
 
-hoomd.write.GSD.write(state=simulation.state, filename="random.gsd", mode="xb")
-
+traj = gsd.hoomd.open("trajectory.gsd")
 #can ad npt if needed
 #npt = hoomd 

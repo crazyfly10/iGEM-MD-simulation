@@ -45,6 +45,16 @@ Native trajectory format, read/written via the separate `gsd` package's `gsd.hoo
 - Read logged series: `gsd.hoomd.read_log()`, with optional name/glob filtering.
 - Prefer reading GSD output directly for analysis over re-running simulations.
 
+## Visualization (`fresnel`)
+
+[Fresnel](https://fresnel.readthedocs.io/en/stable/) is a path-tracing renderer for publication-quality, GPU/CPU-accelerated rendering of particle simulations (soft matter-oriented, integrates naturally with HOOMD-blue/GSD data). Docs: `https://fresnel.readthedocs.io/en/stable/`.
+
+- **Backends**: `fresnel.Device` selects GPU (NVIDIA OptiX) or CPU (Intel Embree).
+- **Workflow**: build a `fresnel.Scene` from geometry primitives (spheres, cylinders, convex polyhedra, meshes, polygons, boxes) → apply `fresnel.material.Material` (roughness, specularity, metallic) → set camera + lighting (preset modes like "cloudy"/"lightbox") → render.
+- **Rendering modes**: `scene.preview()` for fast/interactive draft renders, `scene.pathtrace()` for high-quality final images with global illumination.
+- **Interactive Jupyter view**: `fresnel.interact.SceneView(scene)` opens a Qt widget with click-and-drag camera rotation (requires PySide2/Qt; enable via `%gui qt` in Jupyter first). Call `view.setScene(scene)` after mutating the scene to refresh it.
+- Useful for eyeballing initial configurations (e.g. rigid-body geometry, patch/director orientation) and trajectory frames before committing to a full run, and for producing figures from GSD trajectories.
+
 ## Conventions
 
 - No build system/tests yet — when adding first scripts, use a simple `scripts/` layout + `requirements.txt`/`environment.yml` pinning `hoomd=7.1.2`; document the chosen structure here once decided.
