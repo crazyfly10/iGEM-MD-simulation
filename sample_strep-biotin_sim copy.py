@@ -248,15 +248,15 @@ bond_angle[0] = np.deg2rad(bond_angle[0])
 
 # Apply the potential on the bonds.
 bonds = hoomd.md.bond.Table(bond_length.shape[1])
-bonds.params["A-A"] = dict(r_min = bond_length[0][0], r_max = bond_length[0][-1],
-                           U = bond_length[1], F = -np.gradient(bond_length[1], bond_length[0]))
+bonds.params["PEG-PEG"] = dict(r_min = bond_length[0][0], r_max = bond_length[0][-1],
+                           U = bond_length[1], F = -numpy.gradient(bond_length[1], bond_length[0]))
 # Apply bond angles
 angles = hoomd.md.angle.Table(bond_angle.shape[1])
-angles.params["A-A-A"] = dict(U = bond_angle[1], tau = -np.gradient(bond_angle[1], bond_angle[0]))
+angles.params["PEG-PEG-PEG"] = dict(U = bond_angle[1], tau = -numpy.gradient(bond_angle[1], bond_angle[0]))
 
 # Apply dihedral angles
 dihedrals = hoomd.md.dihedral.Table(dihedral_angle.shape[1])
-dihedrals.params["A-A-A-A"] = dict(U = dihedral_angle[1], tau = -np.gradient(dihedral_angle[1], dihedral_angle[0]))
+dihedrals.params["PEG-PEG-PEG-PEG"] = dict(U = dihedral_angle[1], tau = -numpy.gradient(dihedral_angle[1], dihedral_angle[0]))
 
 integrator.forces.append(patches)
 integrator.forces.append(LJ)
