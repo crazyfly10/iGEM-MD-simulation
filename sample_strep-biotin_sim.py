@@ -142,10 +142,10 @@ integrator.forces.append(patches)
 integrator.forces.append(LJ)
 
 rigid_centers_and_free = hoomd.filter.Rigid(("center", "free"))
-nvt = hoomd.md.methods.ConstantVolume(
-    filter=rigid_centers_and_free, thermostat=hoomd.md.methods.thermostats.MTTK(kT=1.5, tau=1)
+langevin = hoomd.md.methods.langevin(
+    filter=rigid_centers_and_free, kT=1.5
 )
-integrator.methods.append(nvt)
+integrator.methods.append(langevin)
 
 simulation.operations.integrator = integrator
 
