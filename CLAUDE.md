@@ -21,6 +21,8 @@ Update this file with real directory layout, entry points, and run/test commands
 
 Docs: use version-pinned `https://hoomd-blue.readthedocs.io/en/v7.1.2/` — API changed significantly across major versions (v2→v3→v4+ restructured around `Simulation`/`Operations`).
 
+Source: [glotzerlab/hoomd-blue](https://github.com/glotzerlab/hoomd-blue/tree/trunk) — useful when the rendered docs are terse/silent on a specific parameter or convention (e.g. checking a class's actual C++/Python implementation directly) rather than assuming behavior.
+
 ## Units
 
 No fixed unit system — derived from 3 base units: **energy, length, mass** (time ∝ √(mass/energy)·length; force = energy/length; pressure = energy/length³). Given coarse-grained model, likely reduced/LJ units (bead diameter = length unit, ε = energy unit, etc.) rather than "MD units" (kJ/mol, nm, ps) — confirm/state the convention explicitly wherever constants are defined; HOOMD-blue does not catch unit mismatches.

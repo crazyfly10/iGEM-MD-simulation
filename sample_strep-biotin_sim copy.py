@@ -1,14 +1,45 @@
 #import itertools
-#import math
+import math
 
 import gsd.hoomd
 import hoomd
 import numpy
 
+def init_biotin_peg_positions(N_PEG, N_biotin, L):
+    particle_per_mol = N_PEG+N_biotin
+    peg_positions = numpy.zeros((particle_per_mol, 3), dtype=float)
+
+    for i in range(-(particle_per_mol+0.5)//2, (particle_per_mol+0.5)//2):
+        x_pos = i * math.cos(math.radians(23.5)) * 0.3321
+        z_pos = math.sin(math.radians(23.5)) * (
+            math.cos(math.pi * i / 2) ** 2) * 0.3321
+
+        peg_positions[i] = [x_pos, 0.0, z_pos]
+    
+    peg_positions = numpy.tile(peg_positions, (N_biotin, 1))
+
+    random_loc = numpy.random.uniform(-L/2, L/2, size=(N_biotin, 3))
+
+    counter = 0
+    ran_loc_idx = 0
+    for idx, current_loc in numpy.ndenumerate(peg_positions):
+        if counter < (particle_per_mol/N_biotin):
+            counter += 1
+        else:
+            counter = 0
+            ran_loc_idx += 1
+        peg_positions[idx][0] += random_loc[ran_loc_idx][0]
+        peg_positions[idx][1] += random_loc[ran_loc_idx][1] 
+        peg_positions[idx][2] += random_loc[ran_loc_idx][2]
+
+    return peg_positions
+
 N_biotin = 4
 N_strep_cons = 4
 N_strep_cent = 1
-N_particles = N_biotin + N_strep_cons + N_strep_cent
+N_PEG = 40
+N_PEG_mol = 4
+N_particles = N_biotin + N_strep_cons + N_strep_cent + N_PEG
 #spacing = 1.2
 #K = math.ceil(N_particles ** (1 / 3))
 #L = K * spacing
@@ -16,9 +47,9 @@ L = 20
 #x = numpy.linspace(-L / 2, L / 2, K, endpoint=False)
 #position = list(itertools.product(x, repeat=3))
 #position = position[0:N_particles]
-types = ["Strep_cent", "Strep_cons", "Biotin"]
-typeid = [0] * N_strep_cent + [2] * N_biotin
-position = numpy.random.uniform(-L/2, L/2, size=(N_biotin + N_strep_cent, 3))
+types = ["Strep_cent", "Strep_cons", "Biotin", "PEG"]
+typeid = [0] * N_strep_cent + ([2] + [3] * N_PEG/N_biotin) * N_biotin
+position = numpy.random.uniform(-L/2, L/2, size=(N_biotin + N_strep_cent, 3)) + init_biotin_peg_positions(N_PEG_mol, N_biotin, L)
 orientation = [(1, 0, 0, 0)] * (N_biotin + N_strep_cent)
 mass = [1.0] * 5
 
@@ -62,6 +93,7 @@ snapshot.particles.typeid = typeid
 snapshot.particles.types = types
 snapshot.particle.mass = mass
 snapshot.particles.moment_inertia = moment_inertia
+snapshot.particles.body = [0] * N_strep_cent + [-1] * N_biotin
 snapshot.configuration.box = [L, L, L, 0, 0, 0]
 with gsd.hoomd.open(name="initial.gsd", mode="x") as f:
     f.append(snapshot)
