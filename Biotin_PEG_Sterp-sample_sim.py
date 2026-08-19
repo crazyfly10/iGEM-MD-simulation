@@ -5,25 +5,24 @@ import gsd.hoomd
 import hoomd
 import numpy
 
-def init_biotin_peg_positions(N_PEG, N_biotin, L):
-    particle_per_mol = N_PEG+N_biotin
-    peg_positions = numpy.zeros((particle_per_mol, 3), dtype=float)
+def init_biotin_peg_positions(particle_per_molecule, N_molecule, L):
+    peg_positions = numpy.zeros((particle_per_molecule, 3), dtype=float)
 
-    for i in range(-(particle_per_mol+0.5)//2, (particle_per_mol+0.5)//2):
+    for row, i in enumerate(range(-int((particle_per_molecule+0.5)//2), int((particle_per_molecule+0.5)//2)+1)):
         x_pos = i * math.cos(math.radians(23.5)) * 0.3321
         z_pos = math.sin(math.radians(23.5)) * (
             math.cos(math.pi * i / 2) ** 2) * 0.3321
 
-        peg_positions[i] = [x_pos, 0.0, z_pos]
+        peg_positions[row] = [x_pos, 0.0, z_pos]
     
-    peg_positions = numpy.tile(peg_positions, (N_biotin, 1))
+    peg_positions = numpy.tile(peg_positions, (N_molecule, 1))
 
-    random_loc = numpy.random.uniform(-L/2, L/2, size=(N_biotin, 3))
+    random_loc = numpy.random.uniform(-L/2, L/2, size=(N_molecule, 3))
 
     counter = 0
     ran_loc_idx = 0
-    for idx, current_loc in numpy.ndenumerate(peg_positions):
-        if counter < (particle_per_mol/N_biotin):
+    for idx in range(peg_positions.shape[0]):
+        if counter < particle_per_molecule:
             counter += 1
         else:
             counter = 0
@@ -49,9 +48,12 @@ L = 20
 #position = list(itertools.product(x, repeat=3))
 #position = position[0:N_particles]
 types = ["Strep_cent", "Strep_cons", "Biotin", "PEG"]
-per_molecule_particle_typeid = [0] + [2] + [3] * PEG_per_molecule
+per_molecule_particle_typeid = [2] + [3] * PEG_per_molecule
 typeid = [0] * N_strep_cent + per_molecule_particle_typeid * N_PEG_biotin_mol
-position = numpy.random.uniform(-L/2, L/2, size=(N_biotin + N_strep_cent, 3)) + init_biotin_peg_positions(N_PEG_biotin_mol, N_biotin, L)
+position = numpy.vstack([
+    numpy.random.uniform(-L/2, L/2, size=(N_strep_cent, 3)), 
+    init_biotin_peg_positions(PEG_per_molecule + 1, N_PEG_biotin_mol, L)]
+)
 orientation = [(1, 0, 0, 0)] * (N_biotin + N_strep_cent + N_PEG)
 mass = [1.0] * (N_biotin + N_strep_cent + N_PEG)
 
@@ -84,7 +86,7 @@ E_vec = numpy.real(E_vec)
 R = E_vec.T
 new_cons_pos = numpy.dot(R, initial_cons_pos.T).T
 
-moment_inertia = [tuple(I_diagonal)] + [(0,0,0)] * N_biotin
+moment_inertia = [tuple(I_diagonal)] + [(0,0,0)] * (N_biotin + N_PEG)
 
 # gsd snapshot 
 snapshot = gsd.hoomd.Frame()
@@ -95,71 +97,50 @@ snapshot.particles.position = position
 snapshot.particles.orientation = orientation
 snapshot.particles.typeid = typeid
 snapshot.particles.types = types
-snapshot.particle.mass = mass
+snapshot.particles.mass = mass
 snapshot.particles.moment_inertia = moment_inertia
 snapshot.particles.body = [0] * N_strep_cent + [-1] * N_biotin + [-1] * N_PEG
 snapshot.configuration.box = [L, L, L, 0, 0, 0]
 
-# bond  
-snapshot.bonds.N = PEG_per_molecule * N_PEG_biotin_mol
-snapshot.bonds.types = ["Biotin-PEG", "PEG-PEG"]
-per_molecule_bond_typeid = [0] + [1] * PEG_per_molecule
-snapshot.bonds.typeid = per_molecule_bond_typeid * N_PEG_biotin_mol
+# bond, angle, and dihedral topology - built directly from each molecule's
+# known index range, rather than scanning for typeid boundaries
+beads_per_molecule = PEG_per_molecule + 1
+base_offset = N_strep_cent
+bond_group, bond_typeid = [], []
+angle_group, angle_typeid = [], []
+dihedral_group, dihedral_typeid = [], []
 
-molecule_start_index = snapshot.particles.typeid.index(2)
-snapshot.bonds.group = numpy.zeros((snapshot.bonds.N, 2), dtype=int)
-bond_group_row = 0
-for i in range(len(snapshot.particles.typeid[molecule_start_index:])):
-    try:
-        if snapshot.particles.typeid[i+1] == 2: 
-            continue
-        else:
-            snapshot.bonds.group[bond_group_row] = [molecule_start_index, molecule_start_index + 1]
-            molecule_start_index += 1
-            bond_group_row += 1
-    except IndexError:
-        break
-del bond_group_row
+for m in range(N_PEG_biotin_mol):
+    start = base_offset + m * beads_per_molecule
+    for i in range(beads_per_molecule - 1):
+        bond_group.append([start + i, start + i + 1])
+        bond_typeid.append(0 if i == 0 else 1)
+    for i in range(beads_per_molecule - 2):
+        angle_group.append([start + i, start + i + 1, start + i + 2])
+        angle_typeid.append(0 if i == 0 else 1)
+    for i in range(beads_per_molecule - 3):
+        dihedral_group.append([start + i, start + i + 1, start + i + 2, start + i + 3])
+        dihedral_typeid.append(0 if i == 0 else 1)
+
+# bond
+snapshot.bonds.N = len(bond_group)
+snapshot.bonds.types = ["Biotin-PEG", "PEG-PEG"]
+snapshot.bonds.typeid = bond_typeid
+snapshot.bonds.group = numpy.array(bond_group, dtype=int)
 
 # angles
-snapshot.angles.N = (PEG_per_molecule-1) * N_PEG_biotin_mol
+snapshot.angles.N = len(angle_group)
 snapshot.angles.types = ["Biotin-PEG-PEG", "PEG-PEG-PEG"]
-per_molecule_angle_typeid = [0] + [1] * (PEG_per_molecule-2)
-snapshot.angles.typeid = per_molecule_angle_typeid * N_PEG_biotin_mol
-snapshot.angles.group = numpy.zeros((snapshot.angles.N, 3), dtype=int)
-angle_group_row = 0
-for i in range(len(snapshot.particles.typeid[molecule_start_index:])):
-    try:
-        if snapshot.particles.typeid[i+1] == 2 or snapshot.particles.typeid[i+2] == 2:
-            continue
-        else:
-            snapshot.angles.group[angle_group_row] = [molecule_start_index, molecule_start_index + 1, molecule_start_index + 2]
-            molecule_start_index += 1
-            angle_group_row += 1
-    except IndexError:
-        break
-del angle_group_row
+snapshot.angles.typeid = angle_typeid
+snapshot.angles.group = numpy.array(angle_group, dtype=int)
 
 # dihedrals
-snapshot.dihedrals.N = (PEG_per_molecule-2) * N_PEG_biotin_mol
+snapshot.dihedrals.N = len(dihedral_group)
 snapshot.dihedrals.types = ["Biotin-PEG-PEG-PEG", "PEG-PEG-PEG-PEG"]
-per_molecule_dihedral_typeid = [0] + [1] * (PEG_per_molecule-3)
-snapshot.dihedrals.typeid = per_molecule_dihedral_typeid * N_PEG_biotin_mol
-snapshot.dihedrals.group = numpy.zeros((snapshot.dihedrals.N, 4), dtype=int)
-dihedral_group_row = 0
-for i in range(len(snapshot.particles.typeid[molecule_start_index:])):
-    try:
-        if snapshot.particles.typeid[i+1] == 2 or snapshot.particles.typeid[i+2] == 2 or snapshot.particles.typeid[i+3] == 2:
-            continue
-        else:
-            snapshot.dihedrals.group[dihedral_group_row] = [molecule_start_index, molecule_start_index + 1, molecule_start_index + 2, molecule_start_index + 3]
-            molecule_start_index += 1
-            dihedral_group_row += 1
-    except IndexError:
-        break
-del dihedral_group_row
+snapshot.dihedrals.typeid = dihedral_typeid
+snapshot.dihedrals.group = numpy.array(dihedral_group, dtype=int)
 
-with gsd.hoomd.open(name="initial.gsd", mode="x") as f:
+with gsd.hoomd.open(name="initial.gsd", mode="w") as f:
     f.append(snapshot)
 
 # calcaulating orientation of constituents so their orientation matches the positional offset
@@ -209,7 +190,7 @@ integrator.rigid = rigid
 cell = hoomd.md.nlist.Cell(buffer=0.4, exclusion = ["body","bond","angle","dihedral"])
 
 # for biotin streptavidin constituents - patchyLJ
-patches = hoomd.md.pair.ansio.PatchyLJ(nlist=cell)
+patches = hoomd.md.pair.aniso.PatchyLJ(nlist=cell)
 
 # theres nothing on the internet for the half pitch angle because ts has not been done before
 envelope_params_cons = {'alpha': math.pi/4, 'omega': 30} 
@@ -233,7 +214,10 @@ LJ.params[('Strep_cent', 'Biotin')] = dict(epsilon=0, sigma=1)
 LJ.params[('Strep_cons', 'Strep_cons')] = dict(epsilon=0, sigma=1)
 # strep_centre-strep_constituent
 LJ.params[('Strep_cent', 'Strep_cons')] = dict(epsilon=0, sigma=1)
-
+# PEG-PEG
+# PEG-Biotin
+# PEG-Strep_cons
+# PEG-Strep_cent
 
 df_l = pd.read_csv("peg_bond_length.csv")
 df_ba = pd.read_csv("peg_bond_angle.csv")
@@ -243,20 +227,25 @@ df_ba.loc[df_ba.iloc[:, 1].idxmin()]
 bond_length = df_l.to_numpy().T
 bond_angle = pd.read_csv("peg_bond_angle.csv").to_numpy().T
 dihedral_angle = pd.read_csv("peg_dihedral_angle.csv").to_numpy().T
-dihedral_angle[0] = np.deg2rad(dihedral_angle[0])
-bond_angle[0] = np.deg2rad(bond_angle[0])
+dihedral_angle[0] = numpy.deg2rad(dihedral_angle[0])
+bond_angle[0] = numpy.deg2rad(bond_angle[0])
 
 # Apply the potential on the bonds.
 bonds = hoomd.md.bond.Table(bond_length.shape[1])
 bonds.params["PEG-PEG"] = dict(r_min = bond_length[0][0], r_max = bond_length[0][-1],
                            U = bond_length[1], F = -numpy.gradient(bond_length[1], bond_length[0]))
+# need to add the biotin-peg bond as well
+
 # Apply bond angles
 angles = hoomd.md.angle.Table(bond_angle.shape[1])
 angles.params["PEG-PEG-PEG"] = dict(U = bond_angle[1], tau = -numpy.gradient(bond_angle[1], bond_angle[0]))
+# need to add the biotin-peg-peg angle as well
 
 # Apply dihedral angles
 dihedrals = hoomd.md.dihedral.Table(dihedral_angle.shape[1])
 dihedrals.params["PEG-PEG-PEG-PEG"] = dict(U = dihedral_angle[1], tau = -numpy.gradient(dihedral_angle[1], dihedral_angle[0]))
+#need to add the biotin-peg-peg-peg dihedral as well
+
 
 integrator.forces.append(patches)
 integrator.forces.append(LJ)
@@ -265,7 +254,7 @@ integrator.forces.append(angles)
 integrator.forces.append(dihedrals)
 
 rigid_centers_and_free = hoomd.filter.Rigid(("center", "free"))
-langevin = hoomd.md.methods.langevin(
+langevin = hoomd.md.methods.Langevin(
     filter=rigid_centers_and_free, kT=1.5
 )
 integrator.methods.append(langevin)
@@ -287,5 +276,3 @@ simulation.run(10000)
 del trajectory_writer
 
 traj = gsd.hoomd.open("trajectory.gsd")
-#can ad npt if needed
-#npt = hoomd 
