@@ -56,10 +56,8 @@ snapshot.particles.orientation = orientation
 snapshot.particles.typeid = typeid
 snapshot.particles.types = types
 snapshot.particles.mass = mass
-snapshot.particles.mass = mass
 snapshot.particles.moment_inertia = moment_inertia
 snapshot.configuration.box = [L, L, L, 0, 0, 0]
-with gsd.hoomd.open(name="initial.gsd", mode="w") as f:
 with gsd.hoomd.open(name="initial.gsd", mode="w") as f:
     f.append(snapshot)
 
@@ -136,7 +134,6 @@ integrator.forces.append(patches)
 integrator.forces.append(LJ)
 
 rigid_centers_and_free = hoomd.filter.Rigid(("center", "free"))
-langevin = hoomd.md.methods.Langevin(
 langevin = hoomd.md.methods.Langevin(
     filter=rigid_centers_and_free, kT=1.5
 )
