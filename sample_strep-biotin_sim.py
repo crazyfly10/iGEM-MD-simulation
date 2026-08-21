@@ -120,6 +120,7 @@ pair_params_cons = {'epsilon': 15, 'sigma': 1}
 patches.params[('Strep_cons', 'Biotin')] = dict(pair_params=pair_params_cons,
                                  envelope_params=envelope_params_cons)
 patches.r_cut[('Strep_cons','Biotin')] = 4
+patches.directors.default = []
 patches.directors["Strep_cons"] = [(1, 0, 0)]
 patches.directors["Biotin"] = [(1, 0, 0)]
 
