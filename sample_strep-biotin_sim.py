@@ -1,5 +1,5 @@
 #import itertools
-#import math
+import math
 
 import gsd.hoomd
 import hoomd
@@ -60,10 +60,10 @@ snapshot.particles.position = position
 snapshot.particles.orientation = orientation
 snapshot.particles.typeid = typeid
 snapshot.particles.types = types
-snapshot.particle.mass = mass
+snapshot.particles.mass = mass
 snapshot.particles.moment_inertia = moment_inertia
 snapshot.configuration.box = [L, L, L, 0, 0, 0]
-with gsd.hoomd.open(name="initial.gsd", mode="x") as f:
+with gsd.hoomd.open(name="initial.gsd", mode="w") as f:
     f.append(snapshot)
 
 # calcaulating orientation of constituents so their orientation matches the positional offset
@@ -110,10 +110,10 @@ integrator = hoomd.md.Integrator(dt = 0.002, integrate_rotational_dof=True)
 integrator.rigid = rigid
 
 # writing the forces
-cell = hoomd.md.nlist.Cell(buffer=0.4, exclusion = ["body"])
+cell = hoomd.md.nlist.Cell(buffer=0.4, exclusions = ["body"])
 
 # for biotin streptavidin constituents - patchyLJ
-patches = hoomd.md.pair.ansio.PatchyLJ(nlist=cell)
+patches = hoomd.md.pair.aniso.PatchyLJ(nlist=cell)
 
 # theres nothing on the internet for the half pitch angle because ts has not been done before
 envelope_params_cons = {'alpha': math.pi/4, 'omega': 30} 
@@ -142,7 +142,7 @@ integrator.forces.append(patches)
 integrator.forces.append(LJ)
 
 rigid_centers_and_free = hoomd.filter.Rigid(("center", "free"))
-langevin = hoomd.md.methods.langevin(
+langevin = hoomd.md.methods.Langevin(
     filter=rigid_centers_and_free, kT=1.5
 )
 integrator.methods.append(langevin)
