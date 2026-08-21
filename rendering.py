@@ -95,6 +95,7 @@ def render_movie(
     scene = fresnel.Scene(device=device)
     scene.lights = fresnel.light.lightbox()
     scene.camera = _fixed_camera(scene, box, camera_padding)
+    scene.background_color = (1, 1, 1)
 
     if draw_box:
         fresnel.geometry.Box(scene, box, box_radius=box_radius)
