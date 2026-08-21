@@ -10,7 +10,10 @@ N_strep_cent = 1
 L = 10
 types = ["Strep_cent", "Strep_cons", "Biotin"]
 typeid = [0] * N_strep_cent + [2] * N_biotin
-position = numpy.random.uniform(-L/2, L/2, size=(N_biotin + N_strep_cent, 3))
+position = numpy.vstack([
+        numpy.tile(numpy.array([0,0,0]), (N_strep_cent, 1)),
+        numpy.random.uniform(-L/2, L/2, size=(N_biotin, 3))]
+)
 orientation = [(1, 0, 0, 0)] * (N_biotin + N_strep_cent)
 mass = [1.0] * (N_biotin + N_strep_cent)
 
