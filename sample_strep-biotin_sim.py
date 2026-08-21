@@ -1,5 +1,4 @@
-#import itertools
-#import math
+import math
 
 import gsd.hoomd
 import hoomd
@@ -8,19 +7,12 @@ import numpy
 N_biotin = 4
 N_strep_cons = 4
 N_strep_cent = 1
-N_particles = N_biotin + N_strep_cons + N_strep_cent
-#spacing = 1.2
-#K = math.ceil(N_particles ** (1 / 3))
-#L = K * spacing
 L = 20
-#x = numpy.linspace(-L / 2, L / 2, K, endpoint=False)
-#position = list(itertools.product(x, repeat=3))
-#position = position[0:N_particles]
 types = ["Strep_cent", "Strep_cons", "Biotin"]
 typeid = [0] * N_strep_cent + [2] * N_biotin
 position = numpy.random.uniform(-L/2, L/2, size=(N_biotin + N_strep_cent, 3))
 orientation = [(1, 0, 0, 0)] * (N_biotin + N_strep_cent)
-mass = [1.0] * 5
+mass = [1.0] * (N_biotin + N_strep_cent)
 
 #calculating the moment intertia of the central particle
 initial_cons_pos = numpy.array(
@@ -51,7 +43,10 @@ E_vec = numpy.real(E_vec)
 R = E_vec.T
 new_cons_pos = numpy.dot(R, initial_cons_pos.T).T
 
-moment_inertia = [tuple(I_diagonal)] + [(0,0,0)] * N_biotin
+# free biotin particles need nonzero rotational inertia so their orientation
+# can respond to torques from the patchy potential
+I_sphere = 2 / 5 * particle_mass * particle_radius**2
+moment_inertia = [tuple(I_diagonal)] * N_strep_cent + [(I_sphere,) * 3] * N_biotin
 
 # gsd snapshot
 snapshot = gsd.hoomd.Frame()
@@ -60,10 +55,10 @@ snapshot.particles.position = position
 snapshot.particles.orientation = orientation
 snapshot.particles.typeid = typeid
 snapshot.particles.types = types
-snapshot.particle.mass = mass
+snapshot.particles.mass = mass
 snapshot.particles.moment_inertia = moment_inertia
 snapshot.configuration.box = [L, L, L, 0, 0, 0]
-with gsd.hoomd.open(name="initial.gsd", mode="x") as f:
+with gsd.hoomd.open(name="initial.gsd", mode="w") as f:
     f.append(snapshot)
 
 # calcaulating orientation of constituents so their orientation matches the positional offset
@@ -113,10 +108,14 @@ integrator.rigid = rigid
 cell = hoomd.md.nlist.Cell(buffer=0.4, exclusion = ["body"])
 
 # for biotin streptavidin constituents - patchyLJ
-patches = hoomd.md.pair.ansio.PatchyLJ(nlist=cell)
+# default_r_cut/params.default cover the type pairs that don't interact -
+# hoomd requires every type pair to have params/r_cut defined before run()
+patches = hoomd.md.pair.aniso.PatchyLJ(nlist=cell, default_r_cut=1.0)
+patches.params.default = dict(pair_params=dict(epsilon=0, sigma=1),
+                               envelope_params=dict(alpha=math.pi / 4, omega=30))
 
 # theres nothing on the internet for the half pitch angle because ts has not been done before
-envelope_params_cons = {'alpha': math.pi/4, 'omega': 30} 
+envelope_params_cons = {'alpha': math.pi/4, 'omega': 30}
 pair_params_cons = {'epsilon': 15, 'sigma': 1}
 patches.params[('Strep_cons', 'Biotin')] = dict(pair_params=pair_params_cons,
                                  envelope_params=envelope_params_cons)
@@ -125,24 +124,17 @@ patches.directors["Strep_cons"] = [(1, 0, 0)]
 patches.directors["Biotin"] = [(1, 0, 0)]
 
 # for all other LJ interactions - LJ
-LJ = hoomd.md.pair.LJ(nlist=cell)
+LJ = hoomd.md.pair.LJ(nlist=cell, default_r_cut=1.0)
+LJ.params.default = dict(epsilon=0, sigma=1)
 # biotin biotin
 LJ.params[('Biotin', 'Biotin')] = dict(epsilon=1, sigma=1)
 LJ.r_cut[('Biotin', 'Biotin')] = 1.1
-# strep_centre-strep_centre
-LJ.params[('Strep_cent', 'Strep_cent')] = dict(epsilon=0, sigma=1)
-# strep_centre-biotin
-LJ.params[('Strep_cent', 'Biotin')] = dict(epsilon=0, sigma=1)
-# strep_cons-strep_cons
-LJ.params[('Strep_cons', 'Strep_cons')] = dict(epsilon=0, sigma=1)
-# strep_centre-strep_constituent
-LJ.params[('Strep_cent', 'Strep_cons')] = dict(epsilon=0, sigma=1)
 
 integrator.forces.append(patches)
 integrator.forces.append(LJ)
 
 rigid_centers_and_free = hoomd.filter.Rigid(("center", "free"))
-langevin = hoomd.md.methods.langevin(
+langevin = hoomd.md.methods.Langevin(
     filter=rigid_centers_and_free, kT=1.5
 )
 integrator.methods.append(langevin)
@@ -161,8 +153,9 @@ simulation.operations.writers.append(trajectory_writer)
 simulation.state.thermalize_particle_momenta(filter=hoomd.filter.All(), kT=1.5)
 
 simulation.run(10000)
+simulation.operations.writers.remove(trajectory_writer)
 del trajectory_writer
 
 traj = gsd.hoomd.open("trajectory.gsd")
 #can ad npt if needed
-#npt = hoomd 
+#npt = hoomd
