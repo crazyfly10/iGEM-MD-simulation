@@ -1,5 +1,5 @@
 import math
-
+import rendering
 import gsd.hoomd
 import hoomd
 import numpy
@@ -20,6 +20,7 @@ initial_cons_pos = numpy.array(
 )
 particle_mass = 1
 particle_radius = 1
+# calcaulating orientation of constituents so their orientation matches the positional offset
 
 I_ref = numpy.array(
     [
@@ -158,5 +159,6 @@ simulation.operations.writers.remove(trajectory_writer)
 del trajectory_writer
 
 traj = gsd.hoomd.open("trajectory.gsd")
+rendering.render_movie(traj)
 #can ad npt if needed
 #npt = hoomd
