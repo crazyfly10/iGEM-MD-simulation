@@ -1,5 +1,5 @@
 import math
-import rendering as rdr
+import rendering2 as rdr
 import gsd.hoomd
 import hoomd
 import numpy
@@ -7,7 +7,7 @@ import numpy
 N_biotin = 4
 N_strep_cons = 4
 N_strep_cent = 1
-L = 20
+L = 10
 types = ["Strep_cent", "Strep_cons", "Biotin"]
 typeid = [0] * N_strep_cent + [2] * N_biotin
 position = numpy.random.uniform(-L/2, L/2, size=(N_biotin + N_strep_cent, 3))
