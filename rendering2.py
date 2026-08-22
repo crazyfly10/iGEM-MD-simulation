@@ -57,9 +57,10 @@ def _build_scene(frame):
             direction=(1, 1, 1), color=(1.1, 1.1, 1.1), theta=math.pi / 3
         ),
     ]
-    scene.camera = fresnel.camera.Orthographic(
-        position=(L * 2, L, L * 2), look_at=(0, 0, 0), up=(0, 1, 0), height=L * 0.8 + 1
-    )
+    #scene.camera = fresnel.camera.Orthographic(
+        #position=(L * 2, L, L * 2), look_at=(0, 0, 0), up=(0, 1, 0), height=L * 0.8 + 1
+    #)
+    scene.camera = fresnel.camera.Orthographic.fit(scene, look_at=(0, 0, 0), up=(0, 1, 0), height=L * 0.8 + 1)
     scene.background_alpha = 1
     scene.background_color = (1, 1, 1)
     return scene, geometry
