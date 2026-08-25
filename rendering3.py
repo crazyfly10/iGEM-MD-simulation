@@ -11,8 +11,10 @@ device = fresnel.Device()
 
 # 02-Advanced-topics/05-GSD-visualization: open the trajectory and read a
 # single frame (the first one) to render.
-with gsd.hoomd.open(name="trajectory.gsd", mode="r") as gsd_file:
-    snap = gsd_file[0]
+#with gsd.hoomd.open(name="trajectory.gsd", mode="r") as gsd_file:
+gsd_file = gsd.hoomd.open(name="trajectory.gsd", mode="r")
+snap = gsd_file[0]
+
 
 box = snap.configuration.box
 
