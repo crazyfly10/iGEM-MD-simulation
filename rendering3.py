@@ -11,8 +11,9 @@ device = fresnel.Device()
 
 # 02-Advanced-topics/05-GSD-visualization: open the trajectory and read a
 # single frame (the first one) to render.
-with gsd.hoomd.open(name="trajectory.gsd", mode="r") as gsd_file:
-    snap = gsd_file[0]
+#with gsd.hoomd.open(name="trajectory.gsd", mode="r") as gsd_file:
+gsd_file = gsd.hoomd.open(name="trajectory.gsd", mode="r")
+snap = gsd_file[0]
 
 box = snap.configuration.box
 
@@ -74,7 +75,6 @@ scene.lights = fresnel.light.lightbox()
 # than the fresnel.pathtrace() convenience function) - it supports soft
 # lighting/reflections and averages many samples together via .sample().
 tracer = fresnel.tracer.Path(device=device, w=1200, h=1200)
-tracer.sample(scene, samples=64, light_samples=40)
 
 # 02-Advanced-topics/04-Rendering-images-in-matplotlib: [:] converts the
 # tracer's output buffer to a plain numpy RGBA array for imshow (interactive
@@ -83,6 +83,7 @@ tracer.sample(scene, samples=64, light_samples=40)
 
 vid = []
 for frame in gsd_file:
+    tracer.sample(scene, samples=64, light_samples=40)
     geometry.position[:] = frame.particles.position
     frame_arr = Image.fromarray(tracer.output[:], mode="RGBA")
     vid.append(frame_arr)
