@@ -2,7 +2,7 @@ import fresnel
 import gsd.hoomd
 import matplotlib.pyplot as plt
 import numpy as np
-import PIL.Image
+from PIL import Image
 
 # 02-Advanced-topics/01-Devices: create the Device explicitly rather than
 # relying on Scene's implicit default. fresnel.Device() auto-selects GPU
@@ -30,7 +30,7 @@ scene = fresnel.Scene(device=device)
 
 # Spheres for every particle in the system.
 geometry = fresnel.geometry.Sphere(scene, N=N)
-geometry.position[:] = snap.particles.position
+#geometry.position[:] = snap.particles.position
 # 00-Basic-tutorials/02-Material-properties + 03-Outline-materials: give the
 # spheres a material and a dark outline so individual particles read clearly.
 geometry.material = fresnel.material.Material(roughness=0.9)
@@ -79,12 +79,29 @@ tracer.sample(scene, samples=64, light_samples=40)
 # 02-Advanced-topics/04-Rendering-images-in-matplotlib: [:] converts the
 # tracer's output buffer to a plain numpy RGBA array for imshow (interactive
 # display only - the actual PNG file is written via PIL below).
-image = tracer.output[:]
+#image = tracer.output[:]
 
+vid = []
+for frame in gsd_file:
+    geometry.position[:] = frame.particles.position
+    frame_arr = Image.fromarray(tracer.output[:], mode="RGBA")
+    vid.append(frame_arr)
+
+vid[0].save(
+    'sim.gif', 
+    save_all = "True", 
+    append_images = vid[1:],
+    duration = 10,
+)
+
+print('saved sim.gif')
+'''
 fig, ax = plt.subplots(figsize=(6, 6))
 ax.imshow(image, interpolation="lanczos")
 ax.set_xticks([])
 ax.set_yticks([])
-
+'''
+'''
 PIL.Image.fromarray(image, mode="RGBA").save("frame.png")
 print("saved frame.png")
+'''
