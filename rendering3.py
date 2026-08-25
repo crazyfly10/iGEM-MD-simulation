@@ -14,10 +14,6 @@ device = fresnel.Device()
 #with gsd.hoomd.open(name="trajectory.gsd", mode="r") as gsd_file:
 gsd_file = gsd.hoomd.open(name="trajectory.gsd", mode="r")
 snap = gsd_file[0]
-#with gsd.hoomd.open(name="trajectory.gsd", mode="r") as gsd_file:
-gsd_file = gsd.hoomd.open(name="trajectory.gsd", mode="r")
-snap = gsd_file[0]
-
 
 box = snap.configuration.box
 
