@@ -15,14 +15,17 @@ position = numpy.vstack([
         numpy.random.uniform(-L/2, L/2, size=(N_biotin, 3))]
 )
 orientation = [(1, 0, 0, 0)] * (N_biotin + N_strep_cent)
-mass = [1.0] * (N_biotin + N_strep_cent)
+mass = [1.0] * N_strep_cent + [244.31] * N_biotin
 
 #calculating the moment intertia of the central particle
 initial_cons_pos = numpy.array(
-    [[1,0,2], [-1,0,2], [0,1,-2], [0,-1,-2]]
+    [[-1.202,-1.202,-1.202], 
+     [1.202,1.202,-1.202 ], 
+     [-1.202,1.202,1.202], 
+     [1.202,-1.202,1.202]]
 )
-particle_mass = 1
-particle_radius = 1
+particle_mass = 14500
+particle_radius = 1.7
 # calcaulating orientation of constituents so their orientation matches the positional offset
 
 I_ref = numpy.array(
@@ -108,35 +111,99 @@ rigid.create_bodies(simulation.state) # create the rigid body
 integrator = hoomd.md.Integrator(dt = 0.002, integrate_rotational_dof=True)
 integrator.rigid = rigid
 
+
+
+
 # writing the forces
 cell = hoomd.md.nlist.Cell(buffer=0.4, exclusions = ["body"])
 
 # for biotin streptavidin constituents - patchyLJ
 # default_r_cut/params.default cover the type pairs that don't interact -
 # hoomd requires every type pair to have params/r_cut defined before run()
-patches = hoomd.md.pair.aniso.PatchyLJ(nlist=cell, default_r_cut=1.0)
+# mode="shift" shifts U(r_cut) to 0 for the isotropic LJ part (energy
+# bookkeeping only - it adds a constant, so it does not change the force
+# or the dynamics). Kept on for clean thermodynamics/logging.
+patches = hoomd.md.pair.aniso.PatchyLJ(nlist=cell, default_r_cut=1.0, mode="shift")
 patches.params.default = dict(pair_params=dict(epsilon=0, sigma=1),
                                envelope_params=dict(alpha=math.pi / 4, omega=30))
 
 # theres nothing on the internet for the half pitch angle because ts has not been done before
 envelope_params_cons = {'alpha': math.pi/4, 'omega': 30}
-pair_params_cons = {'epsilon': 15, 'sigma': 1}
+
+# From a COM-COM PMF calc (biotin bound inside the streptavidin pocket):
+# well depth -80 kJ/mol at r = 0.2 nm. epsilon is the well depth directly,
+# but sigma is NOT the well location - for 12-6 LJ the minimum sits at
+# r_min = 2**(1/6) * sigma, so sigma must be back-solved from the target
+# r_min instead of set equal to it.
+pmf_r_min = 0.2  # nm, location of the PMF minimum
+pmf_depth = 80  # kJ/mol, magnitude of the PMF well depth
+sigma_patch = pmf_r_min / 2 ** (1 / 6)
+pair_params_cons = {'epsilon': pmf_depth, 'sigma': sigma_patch}
 patches.params[('Strep_cons', 'Biotin')] = dict(pair_params=pair_params_cons,
                                  envelope_params=envelope_params_cons)
-patches.r_cut[('Strep_cons','Biotin')] = 4
+# r_cut should be set by where the LJ tail has decayed to ~0, not by where
+# the PMF calculation happened to stop - the sharp feature near 3.4 nm in
+# the PMF is an artifact of the finite sampling range, not a real feature
+# of the interaction, so it shouldn't drive this choice.
+patches.r_cut[('Strep_cons','Biotin')] = 3 * sigma_patch
 patches.directors.default = []
 patches.directors["Strep_cons"] = [(1, 0, 0)]
 patches.directors["Biotin"] = [(1, 0, 0)]
 
 # for all other LJ interactions - LJ
-LJ = hoomd.md.pair.LJ(nlist=cell, default_r_cut=1.0)
+# mode="shift" only affects energy bookkeeping (adds a constant so
+# U(r_cut)=0) - it does not change forces/dynamics, harmless for the
+# epsilon=0 default pairs.
+LJ = hoomd.md.pair.LJ(nlist=cell, default_r_cut=1.0, mode="shift")
 LJ.params.default = dict(epsilon=0, sigma=1)
-# biotin biotin
-LJ.params[('Biotin', 'Biotin')] = dict(epsilon=1, sigma=1)
-LJ.r_cut[('Biotin', 'Biotin')] = 1.1
+
+# biotin-biotin: pure excluded volume (WCA), not a real attractive well -
+# free biotin molecules don't chemically stick to each other. The previous
+# r_cut=1.1 was smaller than r_min=2**(1/6)*sigma=1.122 (for sigma=1), so
+# it was truncating before the potential ever turned attractive anyway -
+# made that explicit here instead of leaving it as an accidental near-miss.
+# sigma_biotin ~ 0.5 nm approximates real biotin's molecular diameter -
+# calibrate if a more precise value is available.
+sigma_biotin = 0.5
+epsilon_biotin = 1  # kJ/mol scale, soft steric placeholder
+LJ.params[('Biotin', 'Biotin')] = dict(epsilon=epsilon_biotin, sigma=sigma_biotin)
+LJ.r_cut[('Biotin', 'Biotin')] = sigma_biotin * 2 ** (1 / 6)
+
+# Baseline excluded volume, independent of orientation.
+# PatchyLJ's angular envelope multiplies the WHOLE potential - repulsive
+# core included - so outside the patch cone (envelope ~ 0) Strep_cons and
+# Biotin currently have NO interaction at all and can pass through each
+# other. This adds a small always-on repulsive wall to prevent that.
+# HOOMD 7.1.2 has no standalone WCA class - WCA is just LJ truncated and
+# shifted at its own minimum (r_cut = 2**(1/6) * sigma, mode="shift"),
+# which keeps the repulsive branch and drops the attractive well.
+# sigma_excl must stay smaller than pmf_r_min (0.2 nm) or this wall would
+# sterically block the real bound state - this value is a placeholder and
+# should be calibrated against real steric/vdW radii, not derived from data.
+wca = hoomd.md.pair.LJ(nlist=cell, default_r_cut=0.0, mode="shift")
+wca.params.default = dict(epsilon=0, sigma=1)
+sigma_excl = 0.1  # nm, placeholder - must stay < pmf_r_min
+epsilon_excl = 1  # kJ/mol scale, matches the PatchyLJ energy convention
+wca.params[('Strep_cons', 'Biotin')] = dict(epsilon=epsilon_excl, sigma=sigma_excl)
+wca.r_cut[('Strep_cons', 'Biotin')] = sigma_excl * 2 ** (1 / 6)
+
+# Strep_cons-Strep_cons: sized to the actual subunit radius (particle_radius,
+# defined above for the rigid-body inertia calc) instead of reusing the tiny
+# Strep_cons-Biotin placeholder - two streptavidin subunits should not be
+# able to interpenetrate the way the shared placeholder used to allow.
+# r_min is set to the sum of the two bead radii (2 * particle_radius), i.e.
+# where the spheres just touch.
+sigma_strep = 2 * particle_radius / 2 ** (1 / 6)
+wca.params[('Strep_cons', 'Strep_cons')] = dict(epsilon=epsilon_excl, sigma=sigma_strep)
+wca.r_cut[('Strep_cons', 'Strep_cons')] = sigma_strep * 2 ** (1 / 6)
 
 integrator.forces.append(patches)
 integrator.forces.append(LJ)
+integrator.forces.append(wca)
+
+
+
+
 
 rigid_centers_and_free = hoomd.filter.Rigid(("center", "free"))
 langevin = hoomd.md.methods.Langevin(
