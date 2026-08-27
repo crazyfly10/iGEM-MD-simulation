@@ -1,0 +1,21 @@
+strep-strep: derive PMF
+strep-PEG: derive PMF
+strep-Prion: derive PMF
+PEG-Prion: derive PMF
+Prion-Prion: derive PMF
+
+bonding/binding:
+Strep-Biotin: derive PMF
+PEG-malemide-prion: IBI for bond length, angle, and dihedrail
+PEG-Biotin: IBI 
+PEG-PEG: alr have
+
+volume exclusion:
+Strep-Malemide
+biotin-biotin
+Biotin-Malemide
+Biotin-Fibril
+Malemide-Malemide
+malemide-fibril (non bonding) 
+strep-biotin (non binding)
+

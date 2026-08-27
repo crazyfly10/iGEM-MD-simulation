@@ -1,5 +1,5 @@
 import math
-import rendering2 as rdr
+#import rendering2 as rdr
 import gsd.hoomd
 import hoomd
 import numpy
@@ -228,7 +228,7 @@ simulation.run(10000)
 simulation.operations.writers.remove(trajectory_writer)
 del trajectory_writer
 
-traj = gsd.hoomd.open("trajectory.gsd")
-rdr.render_movie(traj)
+#traj = gsd.hoomd.open("trajectory.gsd")
+#rdr.render_movie(traj)
 #can ad npt if needed
 #npt = hoomd
