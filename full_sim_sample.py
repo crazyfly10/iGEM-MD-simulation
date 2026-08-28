@@ -286,14 +286,26 @@ STREP_CENT_MOMENT_INERTIA, STREP_CONS_POS = rigid_body_moment_inertia(
 )
 STREP_CENT_MOMENT_INERTIA = tuple(STREP_CENT_MOMENT_INERTIA)
 
+# Biotin is now a patchy particle (patches.directors["Biotin"] in the
+# PatchyLJ section below), so unlike the other fibril bead types it DOES need
+# a real rotational degree of freedom - zero moment_inertia would leave its
+# director frozen at its initial orientation forever, since HOOMD skips
+# rotational integration for particles with zero moment of inertia, so no
+# torque from the patchy potential (or from Langevin's rotational noise)
+# could ever turn it. Treated as an isotropic solid sphere of its own bead
+# mass/radius (same solid_sphere_inertia() helper used for Strep_cent above,
+# same fix sample_strep-biotin_sim_fixed.py made for its own free Biotin -
+# see the comment there: reusing Strep's mass/radius by mistake there gave
+# Biotin ~2700x too much rotational inertia to visibly rotate over a short
+# run).
+BIOTIN_MOMENT_INERTIA = tuple(np.diagonal(solid_sphere_inertia(BIOTIN_BEAD_MASS, BIOTIN_RADIUS)))
+
 MOMENT_INERTIA_BY_TYPEID = {
-    # Fibril beads aren't rigid bodies and have no anisotropic potential
-    # defined yet, so (per the earlier orientation discussion) their own
-    # orientation is physically inert - isotropic/zero moment_inertia is
-    # what makes that true, matching free Biotin/PEG's (0,0,0) in
-    # Biotin_PEG_Sterp-sample_sim.py. Revisit alongside orientation if/when
-    # Biotin gets a PatchyLJ-style director.
-    BIOTIN: (0.0, 0.0, 0.0),
+    # PEG/Malemide/HETS fibril beads still have no anisotropic potential, so
+    # their own orientation stays physically inert - isotropic/zero
+    # moment_inertia is what makes that true, matching Biotin_PEG_Sterp-
+    # sample_sim.py's (0,0,0) convention for its own non-patchy free beads.
+    BIOTIN: BIOTIN_MOMENT_INERTIA,
     PEG: (0.0, 0.0, 0.0),
     MALEMIDE: (0.0, 0.0, 0.0),
     HETS: (0.0, 0.0, 0.0),
@@ -705,7 +717,7 @@ rigid.body["Strep_cent"] = {
 
 rigid.create_bodies(simulation.state)  # create the rigid body
 
-integrator = hoomd.md.Integrator(dt=0.002, integrate_rotational_dof=True)
+integrator = hoomd.md.Integrator(dt=0.020, integrate_rotational_dof=True)
 integrator.rigid = rigid
 
 # ---------------------------------------------------------------------------
@@ -721,7 +733,11 @@ integrator.rigid = rigid
 # sample_strep-biotin_sim_fixed.py; everything else is a PLACEHOLDER - there
 # is no derived data for it yet (see all_pairwise_interactions).
 # ---------------------------------------------------------------------------
-cell = hoomd.md.nlist.Cell(buffer=0.4, exclusions=["bond", "angle", "dihedral", "body"])
+# Tree, not Cell: memory scales with particle count rather than box volume,
+# which matters here since the box (L=4000nm) is much larger than the
+# nonbonded cutoffs (~1-5nm) - Cell's grid-of-cells approach blows up to
+# ~490M cells in that regime and exhausts memory (confirmed empirically).
+tree = hoomd.md.nlist.Tree(buffer=0.4, exclusions=["bond", "angle", "dihedral", "body"])
 
 # --- Category A: Strep_cons-Biotin binding (PatchyLJ) ---
 # Method reused from sample_strep-biotin_sim_fixed.py's PMF-derived approach
@@ -732,7 +748,7 @@ PMF_DEPTH = 80  # kJ/mol, placeholder well depth
 PMF_R_MIN = STREP_SUBUNIT_RADIUS + BIOTIN_RADIUS  # nm, bead contact distance
 SIGMA_PATCH = PMF_R_MIN / 2 ** (1 / 6)
 
-patches = hoomd.md.pair.aniso.PatchyLJ(nlist=cell, default_r_cut=1.0, mode="shift")
+patches = hoomd.md.pair.aniso.PatchyLJ(nlist=tree, default_r_cut=1.0, mode="shift")
 patches.params.default = dict(pair_params=dict(epsilon=0, sigma=1),
                                envelope_params=dict(alpha=math.pi / 4, omega=30))
 patches.params[("Strep_cons", "Biotin")] = dict(
@@ -748,7 +764,7 @@ patches.directors["Biotin"] = [(1, 0, 0)]
 EPSILON_EXCL = 1  # kJ/mol scale, generic steric strength placeholder -
                    # matches sample_strep-biotin_sim_fixed.py's convention
 
-lj = hoomd.md.pair.LJ(nlist=cell, default_r_cut=0.0, mode="shift")
+lj = hoomd.md.pair.LJ(nlist=tree, default_r_cut=0.0, mode="shift")
 lj.params.default = dict(epsilon=0, sigma=1)  # Category C - Strep_cent and
                                                # any other undeclared pair
 
@@ -781,12 +797,165 @@ _set_wca("Malemide", "Strep_cons", MALEMIDE, STREP_CONS)
 _set_wca("HETS", "HETS", HETS, HETS)
 _set_wca("HETS", "Strep_cons", HETS, STREP_CONS)
 
+
+# bond potentials
+har_bond = hoomd.md.bond.Harmonic()
+har_bond.params["PEG-PEG"] = dict(k=17000, r0=0.33)
+har_bond.params["HETS-HETS"] = dict(k=26.002*602.164, r0=1.4) # conversion from N/m to KJ/mol/nm^2
+
+# PLACEHOLDER - no literature/IBI-derived stiffness exists yet for these 3
+# junction bond types (unlike PEG-PEG/HETS-HETS above). k borrows the same
+# order of magnitude as those two real values rather than an arbitrary
+# scale; r0 is exact - the actual bead-radius-sum distance
+# fibril_relative_pos already places these beads at, same convention as
+# RADIUS_BY_TYPEID/wca_sigma above.
+BOND_K_PLACEHOLDER = 15000  # kJ/mol/nm^2
+har_bond.params["Biotin-PEG"] = dict(k=BOND_K_PLACEHOLDER, r0=BIOTIN_RADIUS + PEG_RADIUS)
+har_bond.params["PEG-Malemide"] = dict(k=BOND_K_PLACEHOLDER, r0=PEG_RADIUS + MALEMIDE_RADIUS)
+har_bond.params["Malemide-HETS"] = dict(k=BOND_K_PLACEHOLDER, r0=MALEMIDE_RADIUS + HETS_RADIUS)
+
+# angular potnentials. Two different angle-force classes are used here
+# (CosineSquared for most types, Harmonic for the two exactly-180-degree
+# ones - see the note below on why), so each needs a k=0 default covering
+# the OTHER one's types: HOOMD requires every force object attached to the
+# integrator to have params for every declared angle type, not just the
+# ones it's actually meant to act on (same requirement already confirmed
+# for dihedrals earlier).
+cossqr_angle = hoomd.md.angle.CosineSquared()
+cossqr_angle.params.default = dict(k=0, t0=0)
+cossqr_angle.params["PEG-PEG-PEG"] = dict(k=85, t0=np.radians(130))
+
+J_per_rad2 = 6.08 * (10 ** (-17))
+avogadros = 6.02 * (10 ** (23))
+har_angle = hoomd.md.angle.Harmonic()
+har_angle.params.default = dict(k=0, t0=0)
+har_angle.params["HETS-HETS-HETS"] = dict(k=(J_per_rad2 * avogadros)/1000, t0=math.pi)
+
+# PLACEHOLDER - no literature-derived stiffness/equilibrium exists yet for
+# these 4 junction angle types (unlike PEG-PEG-PEG/HETS-HETS-HETS above). t0
+# is the actual angle measured from fibril_relative_pos's own geometry
+# (both ends' junctions, averaged for PEG-Malemide-HETS since the two ends
+# don't land at quite the same angle: 150 vs 180 degrees).
+#
+# CosineSquared vs Harmonic: U_cossq(theta) = 1/2 k (cos(theta)-cos(t0))^2
+# has local stiffness d^2U/dtheta^2 at theta=t0 equal to k*sin^2(t0), not
+# just k - it vanishes as t0 -> 180 degrees (exactly zero AT 180, since
+# sin(180)=0), a genuinely degenerate equilibrium, not just "softer".
+# Biotin-PEG-PEG sits exactly at t0=180 degrees, so it keeps Harmonic, same
+# reasoning as HETS-HETS-HETS above. The other three (155-165 degrees) are
+# NOT at that pole - sin^2(t0) there is small but nonzero (~0.07-0.18), so
+# CosineSquared is well-behaved (if intentionally softer than its nominal k
+# suggests) and is the standard choice for coarse-grained bond angles
+# (HOOMD's own docs: "CosineSquared is used in the gromos96 and MARTINI
+# force fields") - matches PEG-PEG-PEG's own form/k order of magnitude
+# above rather than mixing in a separately-tuned k for no better reason
+# than it being placeholder either way.
+ANGLE_K_PLACEHOLDER = 85  # kJ/mol, same order of magnitude as PEG-PEG-PEG's
+                           # real CosineSquared value above
+har_angle.params["Biotin-PEG-PEG"] = dict(k=20000, t0=math.radians(180))
+cossqr_angle.params["PEG-PEG-Malemide"] = dict(k=ANGLE_K_PLACEHOLDER, t0=math.radians(155))
+cossqr_angle.params["PEG-Malemide-HETS"] = dict(k=ANGLE_K_PLACEHOLDER, t0=math.radians(165))
+cossqr_angle.params["Malemide-HETS-HETS"] = dict(k=ANGLE_K_PLACEHOLDER, t0=math.radians(165))
+
+dihedralP1 = hoomd.md.dihedral.Periodic()
+dihedralP1.params["PEG-PEG-PEG-PEG"] = dict(k=1.96, d=1, n=1, phi0=np.radians(180))
+dihedralP1.params.default = dict(k=0, d=0, n=0, phi0=0)
+
+dihedralP2 = hoomd.md.dihedral.Periodic()
+dihedralP2.params["PEG-PEG-PEG-PEG"] = dict(k=0.18, d=1, n=2, phi0=np.radians(0))
+dihedralP2.params.default = dict(k=0, d=0, n=0, phi0=0)
+
+dihedralP3 = hoomd.md.dihedral.Periodic()
+dihedralP3.params["PEG-PEG-PEG-PEG"] = dict(k=0.33, d=1, n=3, phi0=np.radians(0))
+dihedralP3.params.default = dict(k=0, d=0, n=0, phi0=0)
+
+dihedralP4 = hoomd.md.dihedral.Periodic()
+dihedralP4.params["PEG-PEG-PEG-PEG"] = dict(k=0.12, d=1, n=4, phi0=np.radians(0))
+dihedralP4.params.default = dict(k=0, d=0, n=0, phi0=0)
+
+# PLACEHOLDER - no literature Fourier decomposition exists yet for these 4
+# junction dihedral types (unlike PEG-PEG-PEG-PEG's real 4-term OPLS-style
+# sum above, split across dihedralP1-P4). Rather than leaving them at the
+# k=0 default (i.e. no torsional preference at all), a single n=1 term is
+# added here on dihedralP4 as a minimal placeholder restraint - k borrows
+# the same order of magnitude as the real PEG terms above (0.12-1.96); d=1,
+# phi0=0 gives one cis-eclipsed minimum, an arbitrary but harmless choice
+# pending real data. dihedralP1-P3 keep these types at their k=0 default,
+# so the placeholder torsion is contributed once, not quadruple-counted.
+DIHEDRAL_K_PLACEHOLDER = 0.5  # kJ/mol
+dihedralP4.params["Biotin-PEG-PEG-PEG"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
+dihedralP4.params["PEG-PEG-PEG-Malemide"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
+dihedralP4.params["PEG-PEG-Malemide-HETS"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
+dihedralP4.params["PEG-Malemide-HETS-HETS"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
+
 integrator.forces.append(patches)
 integrator.forces.append(lj)
+integrator.forces.append(har_bond)
+integrator.forces.append(cossqr_angle)
+integrator.forces.append(har_angle)
+integrator.forces.append(dihedralP1)
+integrator.forces.append(dihedralP2)
+integrator.forces.append(dihedralP3)
+integrator.forces.append(dihedralP4)
+
+# ---------------------------------------------------------------------------
+# Integration method: Langevin dynamics, implicit solvent (CLAUDE.md) - drag
+# and thermal noise stand in for the solvent instead of explicit solvent
+# particles. filter=Rigid(("center","free")) integrates every free particle
+# (fibril beads) plus each rigid body's own central particle (Strep_cent) -
+# not the constituents, which are slaved to their body's motion by the
+# Rigid constraint and are never separately integrated.
+# ---------------------------------------------------------------------------
+# Same unit convention used throughout this file (length=nm, mass=g/mol,
+# energy=kJ/mol - see BOND_K_PLACEHOLDER/har_angle above), so KB comes out in
+# kJ/(mol*K) and time in ps for free, matching
+# sample_strep-biotin_sim_fixed.py's convention.
+KB = 0.0083144621  # kJ/(mol*K)
+TEMPERATURE_K = 298.0  # room temperature
+kT = KB * TEMPERATURE_K
+
+rigid_centers_and_free = hoomd.filter.Rigid(("center", "free"))
+langevin = hoomd.md.methods.Langevin(filter=rigid_centers_and_free, kT=kT)
+
+# Per-type friction from Stokes-Einstein drag in an implicit solvent, rather
+# than HOOMD's default gamma=1 for every type regardless of size (same fix
+# sample_strep-biotin_sim_fixed.py makes, for the same reason: a uniform
+# gamma would make every bead relax as fast as the smallest one, independent
+# of its real size). gamma_trans = 6*pi*eta*r, gamma_rot = 8*pi*eta*r^3
+# (SI Stokes drag), converted Pa*s -> g/mol/(nm*ps) the same way.
+AVOGADRO = 6.02214076e23  # 1/mol
+PAS_TO_SIM_VISCOSITY = AVOGADRO * 1e3 * 1e-9 * 1e-12  # Pa*s -> g/mol/(nm*ps)
+SOLVENT_VISCOSITY_PAS = 8.9e-4  # water at 25 C
+eta = SOLVENT_VISCOSITY_PAS * PAS_TO_SIM_VISCOSITY
+
+for _gamma_type, _gamma_typeid in [
+    ("Biotin", BIOTIN), ("PEG", PEG), ("Malemide", MALEMIDE), ("HETS", HETS),
+]:
+    _r = RADIUS_BY_TYPEID[_gamma_typeid]
+    langevin.gamma[_gamma_type] = 6 * math.pi * eta * _r
+    langevin.gamma_r[_gamma_type] = (8 * math.pi * eta * _r ** 3,) * 3
+
+# STREP_EXCL_RADIUS is exactly this body's hydrodynamic radius - subunit
+# radius plus how far a constituent sits from the body center - already
+# computed above for placement clearance; reused here rather than
+# redefining the same quantity under a new name.
+langevin.gamma["Strep_cent"] = 6 * math.pi * eta * STREP_EXCL_RADIUS
+langevin.gamma_r["Strep_cent"] = (8 * math.pi * eta * STREP_EXCL_RADIUS ** 3,) * 3
+
+integrator.methods.append(langevin)
 
 simulation.operations.integrator = integrator
 
-#initialise integrator
-integrator = hoomd.me.integrator(dt = 0.002, integrate_rotational_dof = True)
-integrator.rigid = rigid
+trajectory_writer = hoomd.write.GSD(
+    filename="full_Sim_traj.gsd",
+    trigger=hoomd.trigger.Periodic(40000),
+    mode="wb",
+)
+
+simulation.operations.writers.append(trajectory_writer)
+
+simulation.state.thermalize_particle_momenta(filter=hoomd.filter.All(), kT=kT)
+simulation.run(150000000) # for 3 microseconds, dt of 2 femotseconds
+simulation.operations.writers.remove(trajectory_writer)
+
 
