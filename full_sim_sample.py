@@ -132,13 +132,46 @@ initial_cons_pos = np.array(
      [1.202,-1.202,1.202]]
 )
 
-L = 4000 #nm
+# ---------------------------------------------------------------------------
+# State point: [fibril] = 0.5 uM.
+#
+# This is set FIRST and deliberately, because the MS-IBI potentials that will
+# replace the interim force parameters below are derived at a state point -
+# the all-atom reference states should bracket the one simulated here.
+#
+# Sizing is on the SOLUTION volume (the cylindrical wall's interior, where the
+# fibrils and streptavidin actually are), not the cube:
+#     V_cyl = pi R^2 H = N_FIBRIL / (N_A * 0.5e-6 mol/L) = 6.64e8 nm^3
+# With an H = 2R aspect that gives R = 473 nm, H = 946 nm.
+#
+# The box is then L = 2 * (R + margin). HOOMD boxes are ALWAYS periodic -
+# there is no "PBC off" switch - so "no periodic boundaries" is achieved by
+# keeping every particle at least one interaction cutoff away from the box
+# face, which the wall does. The 20nm margin comfortably exceeds the largest
+# r_cut in the system (7.6nm, the Strep_cons-Strep_cons attractive tail), so
+# the periodic images are never reachable. That, not box size alone, is what
+# removes the fibril self-image problem: a fibril is up to ~584nm long, far
+# more than L/2, so this model would be unusable with real PBC.
+CYL_RADIUS = 473.0        # nm, cylindrical wall (Eppendorf interior) - the
+CYL_HALF_HEIGHT = 473.0   # nm, wall itself is a separate follow-up
+WALL_BOX_MARGIN = 20.0    # nm, > max r_cut so no particle ever sees an image
+L = 2 * (CYL_RADIUS + WALL_BOX_MARGIN)  # 986 nm
 
 # ---------------------------------------------------------------------------
 # randomised placement of fibrils and streptavidin cores in the box
 # ---------------------------------------------------------------------------
-N_FIBRIL = 100
-N_STREP = 300
+# N chosen to hit 0.5 uM while keeping the run inside a ~2 day budget on an
+# RTX 5090: this gives ~99,600 particles (2.0x the previous 49,963), which
+# scales to roughly 0.9-2.3 days for the 150M step run. N_FIBRIL=300 would
+# hit 0.5 uM too but at ~145,600 particles (1.3-3.5 days), over budget in the
+# pessimistic case. Placement was verified to converge at all of these.
+#
+# NOTE: once the cylindrical wall exists, randomise_positions must sample the
+# CYLINDER interior rather than the box, or objects land in the box corners
+# outside the wall and are ejected on step 0. sample_strep-biotin_sim_fixed.py
+# already does cylinder-interior sampling and is the pattern to copy.
+N_FIBRIL = 200
+N_STREP = 600
 
 REP_UNIT_PER_ARM = 68  # PEG repeat units per arm - same for every fibril
 
@@ -217,7 +250,33 @@ RADIUS_BY_TYPEID = {
     # pair-potential section further below), so it never needs a radius here.
 }
 
+# Biotin-Biotin gets a LARGER exclusion radius than BIOTIN_RADIUS, and only
+# for that one pair. This is what actually enforces "one biotin per
+# streptavidin monomer" - the reason alpha=pi/12 was chosen for the PatchyLJ
+# envelope below, which on its own does NOT achieve it:
+#
+# Biotin binds at r = STREP_SUBUNIT_RADIUS + BIOTIN_RADIUS = 2.1nm from the
+# Strep_cons centre. Two biotins only need to clear each other sterically, so
+# at the default 0.4nm radius (contact 0.8nm) a second biotin can sit just
+# asin(0.8/(2*2.1)) = 11 degrees off the patch axis - INSIDE the 15 degree
+# cone, where it still receives 84% of the envelope, so it binds too.
+# Narrowing alpha barely helps (at alpha=8 deg it needs omega>=300, and costs
+# another ~12x in capture rate, which this system cannot afford).
+#
+# Raising the Biotin-Biotin contact distance to 1.1nm pushes that second
+# biotin out to 15.2 degrees - outside the cone - enforcing single occupancy
+# sterically at zero cost to the binding rate. It also mirrors the real
+# mechanism: a pocket that physically accommodates exactly one biotin.
+#
+# Deliberately NOT done by changing BIOTIN_RADIUS, which would also perturb
+# biotin's mass-independent inertia, its binding distance to Strep_cons, and
+# every other biotin pair.
+BIOTIN_EXCL_RADIUS = 0.55  # nm, Biotin-Biotin steric only (see above)
+
+
 def wca_sigma(typeid_a, typeid_b):
+    if typeid_a == BIOTIN and typeid_b == BIOTIN:
+        return 2 * BIOTIN_EXCL_RADIUS / 2 ** (1 / 6)
     return (RADIUS_BY_TYPEID[typeid_a] + RADIUS_BY_TYPEID[typeid_b]) / 2 ** (1 / 6)
 
 
@@ -470,17 +529,45 @@ def segment_segment_dist(p1, q1, p2, q2, eps=1e-10):
     return np.linalg.norm(c1 - c2)
 
 
-def randomise_positions(n_hets_per_fibril, n_strep, box_L, seed=0, max_attempts=10000):
+def _sample_cylinder_center(rng, radius_bound, half_height_bound):
+    # Uniform placement WITHIN the cylindrical wall, not the box - needed so
+    # nothing gets placed in a box corner outside the wall, where it would
+    # sit in enormous WCA overlap with wallLJ and be violently ejected on the
+    # first integration step (confirmed empirically: ~2% of particles landed
+    # outside the cylinder under plain box-uniform sampling).
+    #
+    # sqrt(uniform) rather than uniform(0, radius_bound) directly: points
+    # uniform per unit AREA of a disk are NOT uniform in r (the area element
+    # grows as r dr, so the correct radial CDF is r**2, inverted here) - same
+    # method sample_strep-biotin_sim_fixed.py uses for its own cylindrical
+    # tube. radius_bound/half_height_bound are the object's own placement
+    # margins (already shrunk by its half-extent), analogous to fib_bound/
+    # strep_bound in the box-based version this replaces.
+    r = math.sqrt(rng.uniform(0, 1)) * radius_bound
+    theta = rng.uniform(0, 2 * math.pi)
+    z = rng.uniform(-half_height_bound, half_height_bound)
+    return np.array([r * math.cos(theta), r * math.sin(theta), z])
+
+
+def randomise_positions(n_hets_per_fibril, n_strep, box_L, cyl_radius, cyl_half_height,
+                         seed=0, max_attempts=10000):
     # n_hets_per_fibril: sequence of Het-s bead counts, one entry per
     # fibril to place (its length sets how many fibrils get placed). Real
     # fibrils aren't all the same length, so this comes from whatever
     # length distribution the rest of the project supplies rather than
     # being generated in here.
+    #
+    # box_L is used only for the final sanity check below (the cylinder must
+    # fit inside the box with room for the wall margin); cyl_radius/
+    # cyl_half_height are the actual placement volume, matching the
+    # cylindrical wall (CYL_RADIUS/CYL_HALF_HEIGHT) the 0.5uM state point was
+    # sized against.
     rng = np.random.default_rng(seed)
 
-    strep_bound = box_L / 2 - STREP_EXCL_RADIUS
-    if strep_bound <= 0:
-        raise ValueError("box_L too small to hold a streptavidin core")
+    strep_radius_bound = cyl_radius - STREP_EXCL_RADIUS
+    strep_height_bound = cyl_half_height - STREP_EXCL_RADIUS
+    if strep_radius_bound <= 0 or strep_height_bound <= 0:
+        raise ValueError("cylinder too small to hold a streptavidin core")
 
     fibril_segments = []   # (p0, p1) world-space end beads of each fibril
     fibril_positions = []
@@ -503,12 +590,13 @@ def randomise_positions(n_hets_per_fibril, n_strep, box_L, seed=0, max_attempts=
         # prevented rather than patched. Recomputed per fibril since length
         # (and therefore this margin) now varies fibril to fibril.
         fib_half_extent = np.max(np.linalg.norm(fib_template, axis=1))
-        fib_bound = box_L / 2 - fib_half_extent
-        if fib_bound <= 0:
-            raise ValueError(f"box_L too small to hold a fibril with {n_hets} Het-s beads")
+        fib_radius_bound = cyl_radius - fib_half_extent
+        fib_height_bound = cyl_half_height - fib_half_extent
+        if fib_radius_bound <= 0 or fib_height_bound <= 0:
+            raise ValueError(f"cylinder too small to hold a fibril with {n_hets} Het-s beads")
 
         for _ in range(max_attempts):
-            center = rng.uniform(-fib_bound, fib_bound, size=3)
+            center = _sample_cylinder_center(rng, fib_radius_bound, fib_height_bound)
             world = fib_template @ quat_to_rotmat(random_unit_quaternion(rng)).T + center
             p0, p1 = world[0], world[-1]
             if any(segment_segment_dist(p0, p1, q0, q1) < 2 * FIBRIL_EXCL_RADIUS
@@ -544,7 +632,7 @@ def randomise_positions(n_hets_per_fibril, n_strep, box_L, seed=0, max_attempts=
 
     for _ in range(n_strep):
         for _ in range(max_attempts):
-            center = rng.uniform(-strep_bound, strep_bound, size=3)
+            center = _sample_cylinder_center(rng, strep_radius_bound, strep_height_bound)
             # core-to-core: twice the radius keeps both bodies' future
             # constituents clear of one another
             if any(np.linalg.norm(center - c) < 2 * STREP_EXCL_RADIUS
@@ -570,6 +658,9 @@ def randomise_positions(n_hets_per_fibril, n_strep, box_L, seed=0, max_attempts=
     positions = np.vstack([np.vstack(fibril_positions), np.array(strep_centers)])
     if np.any(np.abs(positions) > box_L / 2):
         raise RuntimeError("a bead landed outside the box - placement margins are wrong")
+    radial = np.linalg.norm(positions[:, :2], axis=1)
+    if np.any(radial > cyl_radius) or np.any(np.abs(positions[:, 2]) > cyl_half_height):
+        raise RuntimeError("a bead landed outside the cylindrical wall - placement margins are wrong")
 
     # typeid[i] must describe positions[i] - built in the exact same order
     # (all fibril beads, fibril by fibril, then all streptavidin cores) as
@@ -632,7 +723,7 @@ _n_hets_per_fibril = np.maximum(
     bond_group, bond_typeid,
     angle_group, angle_typeid,
     dihedral_group, dihedral_typeid,
-) = randomise_positions(_n_hets_per_fibril, N_STREP, L)
+) = randomise_positions(_n_hets_per_fibril, N_STREP, L, CYL_RADIUS, CYL_HALF_HEIGHT)
 init.particles.N = position.shape[0]
 init.particles.position = position
 init.particles.types = TYPES
@@ -734,23 +825,45 @@ integrator.rigid = rigid
 # is no derived data for it yet (see all_pairwise_interactions).
 # ---------------------------------------------------------------------------
 # Tree, not Cell: memory scales with particle count rather than box volume,
-# which matters here since the box (L=4000nm) is much larger than the
-# nonbonded cutoffs (~1-5nm) - Cell's grid-of-cells approach blows up to
-# ~490M cells in that regime and exhausts memory (confirmed empirically).
+# which matters here since the box is much larger than the nonbonded cutoffs
+# (~1-8nm) - Cell's grid-of-cells approach blows up in that regime and
+# exhausts memory (confirmed empirically at the old L=4000nm).
 tree = hoomd.md.nlist.Tree(buffer=0.4, exclusions=["bond", "angle", "dihedral", "body"])
 
 # --- Category A: Strep_cons-Biotin binding (PatchyLJ) ---
-# Method reused from sample_strep-biotin_sim_fixed.py's PMF-derived approach
-# (well depth, envelope shape - not that file's own BIOTIN_RADIUS, see the
-# note on BIOTIN_RADIUS above), still provisional pending a real bead-level
-# PMF calculation.
-PMF_DEPTH = 80  # kJ/mol, placeholder well depth
+# NOT a placeholder, and not slated for MS-IBI: the coarse-graining mapping
+# makes this one exactly 1:1. One Strep_cons bead is one streptavidin
+# MONOMER, which carries exactly one biotin site, and one Biotin bead is one
+# biotin+amide - so a single bead pair is a single binding event and the
+# measured per-site free energy transfers with no multiplicity correction.
+#
+# 80 kJ/mol is triple-anchored: all-atom streptavidin-biotin gives
+# ~-18 kcal/mol = -75.3 kJ/mol; avidin -20.4 kcal/mol = -85.4 kJ/mol; and the
+# experimental Kd = 4e-14 M gives dG = RT ln(Kd) = -76.4 kJ/mol at 298K. At
+# 32.3 kT the bound-state lifetime is ~100s - utterly irreversible over a
+# microsecond-scale run, which is what CLAUDE.md asks for ("model as
+# strong/permanent bonds").
+#
+# This stays analytic even after MS-IBI lands: IBI targets a radial
+# distribution function and so yields an ISOTROPIC potential, and HOOMD 7.1.2
+# has no tabulated patchy potential (the aniso family - PatchyLJ, PatchyMie,
+# PatchyGaussian, PatchyYukawa and the Expanded variants - is entirely
+# analytic). An IBI curve for this pair therefore has to be FITTED to one of
+# those forms. PatchyMie (tunable n/m exponents set the well width) and
+# PatchyExpandedLJ (a delta shift sets the well position independently of
+# sigma) are much better fit targets than plain PatchyLJ, whose minimum is
+# locked to 2^(1/6)*sigma with a fixed shape.
+PMF_DEPTH = 80  # kJ/mol, per binding site (see derivation above)
 PMF_R_MIN = STREP_SUBUNIT_RADIUS + BIOTIN_RADIUS  # nm, bead contact distance
 SIGMA_PATCH = PMF_R_MIN / 2 ** (1 / 6)
 
 patches = hoomd.md.pair.aniso.PatchyLJ(nlist=tree, default_r_cut=1.0, mode="shift")
 patches.params.default = dict(pair_params=dict(epsilon=0, sigma=1),
                                envelope_params=dict(alpha=math.pi / 4, omega=30))
+# alpha=pi/12 keeps the binding directional. Note it does NOT by itself
+# restrict a monomer to one biotin - a second biotin can sit 11 degrees
+# off-axis (inside this cone) and still get 84% of the envelope. Single
+# occupancy is enforced sterically instead, by BIOTIN_EXCL_RADIUS above.
 patches.params[("Strep_cons", "Biotin")] = dict(
     pair_params=dict(epsilon=PMF_DEPTH, sigma=SIGMA_PATCH),
     envelope_params=dict(alpha=math.pi / 12, omega=30),
@@ -761,8 +874,26 @@ patches.directors["Strep_cons"] = [(1, 0, 0)]
 patches.directors["Biotin"] = [(1, 0, 0)]
 
 # --- Categories B+C: everything else (isotropic WCA / non-interacting) ---
-EPSILON_EXCL = 1  # kJ/mol scale, generic steric strength placeholder -
-                   # matches sample_strep-biotin_sim_fixed.py's convention
+# This is the all_pairwise_interactions "volume exclusion" group: steric only,
+# with no chemistry for MS-IBI to capture, so these values are FINAL rather
+# than interim.
+#
+# For a purely repulsive WCA core, epsilon does nothing except set the cost of
+# overlapping - so the only real requirement is epsilon >= kT, and there is no
+# observable that would pin a per-pair value. Hence one uniform number rather
+# than a size-scaled table, which would imply precision the model lacks.
+#
+# The previous epsilon=1 (inherited from sample_strep-biotin_sim_fixed.py,
+# where it is likewise labelled a "soft steric placeholder") was too soft:
+# with kT = 2.478 kJ/mol at 298K, reaching nominal contact r=sigma cost only
+# 0.4 kT, so cores interpenetrated routinely. At 2.5 kJ/mol:
+#     r = sigma        -> 1.0 kT
+#     r = 0.9 sigma    -> 7.7 kT
+#     r = 0.8 sigma    -> 44 kT
+# Checked not to constrain the timestep: the fastest WCA mode (PEG-PEG) has a
+# 743fs period, 3.3x slower than the PEG-PEG bond's limiting 226fs.
+EPSILON_EXCL = 2.5  # kJ/mol, = kT at 298K (also brackets Martini's weakest
+                     # interaction level, 2.0 kJ/mol)
 
 lj = hoomd.md.pair.LJ(nlist=tree, default_r_cut=0.0, mode="shift")
 lj.params.default = dict(epsilon=0, sigma=1)  # Category C - Strep_cent and
@@ -773,17 +904,20 @@ def _set_wca(type_a, type_b, typeid_a, typeid_b, epsilon=EPSILON_EXCL):
     lj.params[(type_a, type_b)] = dict(epsilon=epsilon, sigma=sigma)
     lj.r_cut[(type_a, type_b)] = sigma * 2 ** (1 / 6)
 
-# real values, reused from sample_strep-biotin_sim_fixed.py
-_set_wca("Biotin", "Biotin", BIOTIN, BIOTIN)
+# Method (WCA truncation, sigma from bead radii) follows
+# sample_strep-biotin_sim_fixed.py; the epsilon there is a placeholder too,
+# not measured data, so it is not "reused" as a real value.
+_set_wca("Biotin", "Biotin", BIOTIN, BIOTIN)  # uses BIOTIN_EXCL_RADIUS - see
+                                               # the note there on enforcing
+                                               # one biotin per strep monomer
 _set_wca("Strep_cons", "Strep_cons", STREP_CONS, STREP_CONS)
 _set_wca("Strep_cons", "Biotin", STREP_CONS, BIOTIN)  # baseline WCA,
                                                         # coexists with the
                                                         # PatchyLJ envelope
                                                         # above on this pair
 
-# PLACEHOLDER - no derived data exists yet for any of these (see
-# all_pairwise_interactions); sigma is geometry-correct (bead radii), only
-# epsilon is a guess.
+# Remaining steric pairs. sigma is geometry-exact (bead radii); epsilon is the
+# same uniform kT-scale core as above.
 _set_wca("Biotin", "PEG", BIOTIN, PEG)
 _set_wca("Biotin", "Malemide", BIOTIN, MALEMIDE)
 _set_wca("Biotin", "HETS", BIOTIN, HETS)
@@ -797,18 +931,123 @@ _set_wca("Malemide", "Strep_cons", MALEMIDE, STREP_CONS)
 _set_wca("HETS", "HETS", HETS, HETS)
 _set_wca("HETS", "Strep_cons", HETS, STREP_CONS)
 
+# --- Weak nonspecific attraction on the streptavidin pairs ---
+# INTERIM - replace with MS-IBI tables (hoomd.md.pair.Table). These are the
+# all_pairwise_interactions "derive PMF" pairs; the values here are seeds that
+# keep the model running, not predictions of what MS-IBI will converge to
+# (an iterated IBI potential is generally SHALLOWER than its PMF seed, since
+# iterating removes the indirect many-body correlations the PMF double-counts).
+#
+# Carried on a SECOND LJ object rather than by deepening the WCA above,
+# because these pairs need a hard core AND a sub-kT well, and one LJ epsilon
+# cannot set both independently. The WCA object above keeps supplying the
+# core for every pair; this object adds only the attractive tail. HOOMD sums
+# forces across integrator.forces - the same stacking the four
+# dihedral.Periodic objects further below already rely on.
+#
+# The epsilons are small because of the COARSE-GRAINING MAPPING, which is easy
+# to get wrong by an order of magnitude:
+#  - Strep_cons is one streptavidin MONOMER, so a tetramer core is FOUR beads
+#    and a core-core encounter sums over many bead pairs. Calibrating the
+#    orientation-averaged association integral
+#    K_a = 4*pi*N_A*int[<exp(-U/kT)>-1] r^2 dr over all 4x4 pairs, a per-bead
+#    epsilon of 1.0-1.5 reproduces a core-core Kd of 10.5-1.8 mM, bracketing
+#    ubiquitin's measured nonspecific self-association (Kd = 4.8 mM, the
+#    standard "well-behaved soluble protein" reference). Treating it as a
+#    single bead pair would have suggested ~3, which gives Kd = 0.3 mM -
+#    about 16x too sticky, i.e. streptavidin would cluster.
+#  - PEG is one EO unit, but the all-atom PEG-on-albumin reference reports
+#    dG_ads = -1.5 to -2.8 kJ/mol per OLIGOMER (its chains are ~7 EO). Spread
+#    over the units actually touching, and with 68 EO beads per fibril arm,
+#    the per-bead value is ~0.5 kJ/mol. Anything larger glues PEG arms onto
+#    streptavidin and blocks the biotin sites - backwards for a polymer whose
+#    defining property is that it resists protein adsorption.
+# All are free energies from solvated all-atom references, never gas-phase
+# interaction energies: for PEG-albumin those differ by ~50x (-84 to -138
+# kJ/mol vs -1.5 to -2.8), entirely desolvation, and this model is implicit
+# solvent so the free energy is the correct input.
+lj_attr = hoomd.md.pair.LJ(nlist=tree, default_r_cut=0.0, mode="shift")
+lj_attr.params.default = dict(epsilon=0, sigma=1)  # inert on every other pair
+
+def _set_attr(type_a, type_b, typeid_a, typeid_b, epsilon):
+    sigma = wca_sigma(typeid_a, typeid_b)
+    lj_attr.params[(type_a, type_b)] = dict(epsilon=epsilon, sigma=sigma)
+    lj_attr.r_cut[(type_a, type_b)] = 2.5 * sigma  # full LJ, keeps the well
+
+_set_attr("Strep_cons", "Strep_cons", STREP_CONS, STREP_CONS, 1.2)
+_set_attr("Strep_cons", "HETS", STREP_CONS, HETS, 1.0)
+_set_attr("Strep_cons", "PEG", STREP_CONS, PEG, 0.5)
+
+# HETS-HETS and PEG-HETS deliberately get NO attractive term, and stay purely
+# repulsive above. A fibril is ~344 HETS beads, so for any per-bead contact
+# energy across the plausible range (1-40 kT), two fibrils lying side by side
+# accumulate >300 kT and bundle irreversibly - which would out-compete
+# streptavidin-mediated crosslinking and give fibril bundles instead of a
+# node-crosslinked network. Revisit only if bundling is itself the object of
+# study.
+
+# ---------------------------------------------------------------------------
+# Cylindrical wall (Eppendorf-tube interior) - confines the solution to the
+# CYL_RADIUS/CYL_HALF_HEIGHT cylinder that the 0.5uM state point was actually
+# sized against (see the L/N_FIBRIL derivation above). This is what makes
+# "no periodic boundaries" physically real rather than just a large box: the
+# WCA wall keeps every particle away from the box faces, so the periodic
+# images set up by L are never actually reached.
+#
+# hoomd.md.wall does not exist in HOOMD 7.1.2 - wall GEOMETRY lives in the
+# top-level hoomd.wall module (Cylinder, Plane, Sphere), confirmed via
+# dir(hoomd.wall); only the wall FORCE/potential classes live under
+# hoomd.md.external.wall. A cylinder wall alone spans the whole box along its
+# axis (unbounded), so two Plane walls cap it at +-CYL_HALF_HEIGHT to form a
+# closed capsule matching the cylinder this file's state point assumes.
+cylindrical_wall = hoomd.wall.Cylinder(radius=CYL_RADIUS, axis=(0, 0, 1))
+top_cap = hoomd.wall.Plane(origin=(0, 0, CYL_HALF_HEIGHT), normal=(0, 0, -1))
+bottom_cap = hoomd.wall.Plane(origin=(0, 0, -CYL_HALF_HEIGHT), normal=(0, 0, 1))
+
+# WCA (purely repulsive, steric confinement only - no physisorption modelled)
+# on every type that actually occupies space near the wall. sigma is set the
+# same way as every other WCA sigma in this file - (radius_a+radius_b)/2^(1/6)
+# - with the wall itself standing in for a particle of zero radius, so
+# r_cut = sigma*2**(1/6) comes out to exactly the bead's own radius: the wall
+# starts repelling right where the bead's surface would touch it.
+# Strep_cent is excluded, consistent with it being non-interacting for every
+# other pair in this file (it is the rigid-body bookkeeping anchor, never a
+# real surface).
+wallLJ = hoomd.md.external.wall.LJ(walls=[cylindrical_wall, top_cap, bottom_cap])
+wallLJ.params.default = dict(epsilon=0, sigma=1, r_cut=0)
+
+def _set_wall_wca(type_name, typeid_, epsilon=EPSILON_EXCL):
+    sigma = RADIUS_BY_TYPEID[typeid_] / 2 ** (1 / 6)
+    wallLJ.params[type_name] = dict(epsilon=epsilon, sigma=sigma, r_cut=sigma * 2 ** (1 / 6))
+
+_set_wall_wca("Biotin", BIOTIN)
+_set_wall_wca("PEG", PEG)
+_set_wall_wca("Malemide", MALEMIDE)
+_set_wall_wca("HETS", HETS)
+_set_wall_wca("Strep_cons", STREP_CONS)
+
 
 # bond potentials
 har_bond = hoomd.md.bond.Harmonic()
 har_bond.params["PEG-PEG"] = dict(k=17000, r0=0.33)
 har_bond.params["HETS-HETS"] = dict(k=26.002*602.164, r0=1.4) # conversion from N/m to KJ/mol/nm^2
 
-# PLACEHOLDER - no literature/IBI-derived stiffness exists yet for these 3
-# junction bond types (unlike PEG-PEG/HETS-HETS above). k borrows the same
-# order of magnitude as those two real values rather than an arbitrary
-# scale; r0 is exact - the actual bead-radius-sum distance
-# fibril_relative_pos already places these beads at, same convention as
-# RADIUS_BY_TYPEID/wca_sigma above.
+# INTERIM - replace with MS-IBI tables (hoomd.md.bond.Table); these 3
+# junction bonds are exactly what all_pairwise_interactions slates for IBI
+# ("PEG-malemide-prion: IBI for bond length, angle, and dihedral";
+# "PEG-Biotin: IBI"). k is bracketed by the file's own two literature bonds
+# (HETS-HETS 15657, PEG-PEG 17000) rather than invented, and is low-risk
+# either way: bond stiffness sets the integration timestep, not the chain's
+# conformational behaviour, which the angles and dihedrals control.
+# r0 is exact - the bead-radius-sum (tangent-sphere) distance
+# fibril_relative_pos already places these beads at, the same convention as
+# RADIUS_BY_TYPEID/wca_sigma above, and independently validated by PEG-PEG
+# where 2*0.17 = 0.34nm against the literature 0.33nm.
+#
+# Note for later: published Martini/PEO models Boltzmann-inverted from
+# all-atom use b0=0.322nm with k=7000 (Rossi) where this file uses the
+# Lee-type 0.33/17000. Both are literature; moving PEG-PEG to 7000 would
+# raise the timestep ceiling by ~1.6x, since that bond is the limiting mode.
 BOND_K_PLACEHOLDER = 15000  # kJ/mol/nm^2
 har_bond.params["Biotin-PEG"] = dict(k=BOND_K_PLACEHOLDER, r0=BIOTIN_RADIUS + PEG_RADIUS)
 har_bond.params["PEG-Malemide"] = dict(k=BOND_K_PLACEHOLDER, r0=PEG_RADIUS + MALEMIDE_RADIUS)
@@ -823,6 +1062,12 @@ har_bond.params["Malemide-HETS"] = dict(k=BOND_K_PLACEHOLDER, r0=MALEMIDE_RADIUS
 # for dihedrals earlier).
 cossqr_angle = hoomd.md.angle.CosineSquared()
 cossqr_angle.params.default = dict(k=0, t0=0)
+# Literature value, kept as-is. Flagged for later: k=85 at t0=130 implies a
+# chain persistence length of ~0.73nm, against ~0.37nm from all-atom CHARMM
+# C35r PEG (and 3.7-3.8 A experimentally) - about 2x stiff. Definitions of
+# l_p differ between papers so this is a soft comparison, but it matters here
+# because every junction angle below is anchored to this angle's effective
+# stiffness.
 cossqr_angle.params["PEG-PEG-PEG"] = dict(k=85, t0=np.radians(130))
 
 J_per_rad2 = 6.08 * (10 ** (-17))
@@ -831,11 +1076,10 @@ har_angle = hoomd.md.angle.Harmonic()
 har_angle.params.default = dict(k=0, t0=0)
 har_angle.params["HETS-HETS-HETS"] = dict(k=(J_per_rad2 * avogadros)/1000, t0=math.pi)
 
-# PLACEHOLDER - no literature-derived stiffness/equilibrium exists yet for
-# these 4 junction angle types (unlike PEG-PEG-PEG/HETS-HETS-HETS above). t0
-# is the actual angle measured from fibril_relative_pos's own geometry
-# (both ends' junctions, averaged for PEG-Malemide-HETS since the two ends
-# don't land at quite the same angle: 150 vs 180 degrees).
+# INTERIM - replace with MS-IBI tables (hoomd.md.angle.Table). t0 is exact -
+# measured from fibril_relative_pos's own geometry (both ends' junctions,
+# averaged for PEG-Malemide-HETS since the two ends don't land at quite the
+# same angle: 150 vs 180 degrees). Only k is estimated.
 #
 # CosineSquared vs Harmonic: U_cossq(theta) = 1/2 k (cos(theta)-cos(t0))^2
 # has local stiffness d^2U/dtheta^2 at theta=t0 equal to k*sin^2(t0), not
@@ -843,19 +1087,39 @@ har_angle.params["HETS-HETS-HETS"] = dict(k=(J_per_rad2 * avogadros)/1000, t0=ma
 # sin(180)=0), a genuinely degenerate equilibrium, not just "softer".
 # Biotin-PEG-PEG sits exactly at t0=180 degrees, so it keeps Harmonic, same
 # reasoning as HETS-HETS-HETS above. The other three (155-165 degrees) are
-# NOT at that pole - sin^2(t0) there is small but nonzero (~0.07-0.18), so
-# CosineSquared is well-behaved (if intentionally softer than its nominal k
-# suggests) and is the standard choice for coarse-grained bond angles
-# (HOOMD's own docs: "CosineSquared is used in the gromos96 and MARTINI
-# force fields") - matches PEG-PEG-PEG's own form/k order of magnitude
-# above rather than mixing in a separately-tuned k for no better reason
-# than it being placeholder either way.
-ANGLE_K_PLACEHOLDER = 85  # kJ/mol, same order of magnitude as PEG-PEG-PEG's
-                           # real CosineSquared value above
-har_angle.params["Biotin-PEG-PEG"] = dict(k=20000, t0=math.radians(180))
-cossqr_angle.params["PEG-PEG-Malemide"] = dict(k=ANGLE_K_PLACEHOLDER, t0=math.radians(155))
-cossqr_angle.params["PEG-Malemide-HETS"] = dict(k=ANGLE_K_PLACEHOLDER, t0=math.radians(165))
-cossqr_angle.params["Malemide-HETS-HETS"] = dict(k=ANGLE_K_PLACEHOLDER, t0=math.radians(165))
+# not at that pole, so CosineSquared is well-behaved and is the standard
+# coarse-grained choice (HOOMD's own docs: "CosineSquared is used in the
+# gromos96 and MARTINI force fields").
+#
+# k is specified via the EFFECTIVE stiffness k*sin^2(t0) rather than the
+# nominal k, because a single nominal value produces wildly different physics
+# depending on where t0 sits. At the previous uniform k=85 the effective
+# stiffnesses were 15.2 / 5.7 / 5.7 against the PEG backbone's 49.9 - a 9x
+# spread that was an artifact of the functional form, not a modelling
+# decision, and one that made junctions onto the heavy maleimide/HETS beads
+# FLOPPIER than the PEG chain they hang off, which is backwards. Anchoring
+# every junction to k_eff = 49.9 (the effective stiffness of PEG-PEG-PEG, the
+# only angle here with a literature value) makes the choice explicit. The
+# resulting large nominal numbers are sin^2(t0) compensation, not extra
+# stiffness, and were checked against the timestep: the resulting mode
+# periods are 2678-10992fs, far from the PEG-PEG bond's limiting 226fs.
+ANGLE_K_EFF = 85 * math.sin(math.radians(130)) ** 2  # 49.9 kJ/mol/rad^2
+
+def _cossq_k(t0_deg):
+    return ANGLE_K_EFF / math.sin(math.radians(t0_deg)) ** 2
+
+# Biotin-PEG-PEG was k=20000, which is ~400x the value below and was flat-out
+# wrong: at 8072 kT/rad^2 it allowed an RMS angular fluctuation of 0.64
+# degrees, i.e. a rigid rod, for what is physically a flexible PEG-biotin
+# linker. All-atom CHARMM C35r gives PEG a persistence length of 3.7 A
+# (experiment: 3.7-3.8 A); k=20000 implies a local persistence length of
+# ~2664 nm - longer than the entire 530nm fibril. It was also, silently, the
+# timestep-limiting mode in the whole system (157fs period, tighter than the
+# PEG-PEG bond's 226fs), so removing it relaxes the dt ceiling.
+har_angle.params["Biotin-PEG-PEG"] = dict(k=ANGLE_K_EFF, t0=math.radians(180))
+cossqr_angle.params["PEG-PEG-Malemide"] = dict(k=_cossq_k(155), t0=math.radians(155))
+cossqr_angle.params["PEG-Malemide-HETS"] = dict(k=_cossq_k(165), t0=math.radians(165))
+cossqr_angle.params["Malemide-HETS-HETS"] = dict(k=_cossq_k(165), t0=math.radians(165))
 
 dihedralP1 = hoomd.md.dihedral.Periodic()
 dihedralP1.params["PEG-PEG-PEG-PEG"] = dict(k=1.96, d=1, n=1, phi0=np.radians(180))
@@ -873,9 +1137,11 @@ dihedralP4 = hoomd.md.dihedral.Periodic()
 dihedralP4.params["PEG-PEG-PEG-PEG"] = dict(k=0.12, d=1, n=4, phi0=np.radians(0))
 dihedralP4.params.default = dict(k=0, d=0, n=0, phi0=0)
 
-# PLACEHOLDER - no literature Fourier decomposition exists yet for these 4
-# junction dihedral types (unlike PEG-PEG-PEG-PEG's real 4-term OPLS-style
-# sum above, split across dihedralP1-P4). Rather than leaving them at the
+# INTERIM - replace with MS-IBI tables (hoomd.md.dihedral.Table). No
+# literature Fourier decomposition exists for these 4 junction dihedral types
+# (unlike PEG-PEG-PEG-PEG's real 4-term sum above, split across
+# dihedralP1-P4). Lowest-risk of the interim values: k sits inside the range
+# of the real PEG terms already in this file. Rather than leaving them at the
 # k=0 default (i.e. no torsional preference at all), a single n=1 term is
 # added here on dihedralP4 as a minimal placeholder restraint - k borrows
 # the same order of magnitude as the real PEG terms above (0.12-1.96); d=1,
@@ -889,7 +1155,9 @@ dihedralP4.params["PEG-PEG-Malemide-HETS"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1,
 dihedralP4.params["PEG-Malemide-HETS-HETS"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
 
 integrator.forces.append(patches)
-integrator.forces.append(lj)
+integrator.forces.append(lj)       # repulsive cores, every pair
+integrator.forces.append(lj_attr)  # weak attractive tails, strep pairs only
+integrator.forces.append(wallLJ)   # cylindrical + cap confinement
 integrator.forces.append(har_bond)
 integrator.forces.append(cossqr_angle)
 integrator.forces.append(har_angle)
@@ -948,7 +1216,7 @@ simulation.operations.integrator = integrator
 
 trajectory_writer = hoomd.write.GSD(
     filename="full_Sim_traj.gsd",
-    trigger=hoomd.trigger.Periodic(40000),
+    trigger=hoomd.trigger.Periodic(15000),
     mode="wb",
 )
 
