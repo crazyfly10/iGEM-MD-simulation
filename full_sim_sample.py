@@ -12,7 +12,7 @@
 # 1.4 nm in diamter for het-s so 0.7 nm radius
 
 import math
-import pandas as pd
+#import pandas as pd
 import gsd.hoomd
 import hoomd
 import numpy as np
