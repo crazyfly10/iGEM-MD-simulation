@@ -39,8 +39,24 @@ def fibril_relative_pos(N_HETs, rep_unit):
     z_mal = (mal_radius + Hets_radius) * math.sin(math.pi/4 - P_M_H_ang/2)
     y_mal = (mal_radius + Hets_radius) * math.cos(math.pi/4 - P_M_H_ang/2)
 
+    # last_mal uses -z_mal, not +z_mal - NOT a typo. The rest of this
+    # function builds a proper zigzag by writing the SAME literal pattern for
+    # a "step away from the backbone" on both arms (e.g. the PEG-PEG zigzag
+    # below writes "-z_peg_d" for the i=0 step on BOTH left_pegs and
+    # right_pegs - not mirrored - only y mirrors between arms, z follows the
+    # same alternation). first_mal (the left arm's i=0 step) already follows
+    # that convention (-z_mal). last_mal (the right arm's own i=0 step)
+    # previously used +z_mal - a different sign for the same step index,
+    # breaking the arms' mirror symmetry. This one sign was the actual root
+    # cause of the asymmetry/degeneracy; a compensating sign flip elsewhere
+    # (tried and rejected: flipping Mal_peg_r) only traded one broken
+    # symmetry for another; only fixing the true source (this line) makes
+    # PEG-PEG-Malemide, PEG-Malemide-HETS AND Malemide-HETS-HETS all
+    # symmetric between the two arms simultaneously, at every rep_unit and
+    # N_HETs tried (verified computationally, not just at this file's own
+    # values).
     first_mal = np.array([Het_s_pos[0]]) + np.array([0,-y_mal,-z_mal])
-    last_mal = np.array([Het_s_pos[-1]]) + np.array([0,y_mal,z_mal])
+    last_mal = np.array([Het_s_pos[-1]]) + np.array([0,y_mal,-z_mal])
     Mal_w_pri = np.vstack([
         first_mal,
         Het_s_pos,
@@ -51,6 +67,10 @@ def fibril_relative_pos(N_HETs, rep_unit):
     peg_radius = 0.17
     z_fpeg = (mal_radius + peg_radius) * math.sin(math.pi/4 - P_M_H_ang/2)
     y_fpeg = (mal_radius + peg_radius) * math.cos(math.pi/4 - P_M_H_ang/2)
+    # Mal_peg_l/Mal_peg_r ARE meant to share the same literal sign (+z_fpeg,
+    # the i=1 step of the same convention described above) - this was
+    # already correct before the last_mal fix above; it just couldn't
+    # produce symmetric angles while last_mal was still wrong.
     Mal_peg_l = np.array(Mal_w_pri[0]) + np.array([0,-y_fpeg,z_fpeg])
     Mal_peg_r = np.array(Mal_w_pri[-1]) + np.array([0,y_fpeg,z_fpeg])
     P1_M_H_chain = np.vstack([
@@ -99,8 +119,22 @@ def fibril_relative_pos(N_HETs, rep_unit):
     biotin_peg_ang = math.radians(110)
     B_y_d = (biotin_radius + peg_radius) * math.cos(math.pi/4 - biotin_peg_ang/2)
     B_z_d = (biotin_radius + peg_radius) * math.sin(math.pi/4 - biotin_peg_ang/2)
-    l_biotin = np.array(full_peg_M_H[0]) + np.array([0,-B_y_d, -B_z_d])
-    r_biotin = np.array(full_peg_M_H[-1]) + np.array([0,B_y_d, -B_z_d])
+    # A fixed -B_z_d here (as this line previously had, on both ends) only
+    # continues the zigzag's existing alternation correctly for HALF of the
+    # possible rep_unit values - whichever z-direction the outermost PEG bead
+    # already ended up facing depends on the PARITY of rep_unit (each zigzag
+    # step flips z, so after rep_unit-1 steps the sign has flipped that many
+    # times). At odd rep_unit -B_z_d continues the zigzag correctly; at even
+    # rep_unit (this file's actual REP_UNIT_PER_ARM=68) it instead lands
+    # exactly in line with the previous two beads, making the biotin
+    # collinear with them - a degenerate Biotin-PEG-PEG-PEG dihedral, and
+    # confirmed to happen at every even rep_unit tried (4, 6, 8, 68). Both
+    # ends need the SAME sign (verified directly, not assumed by symmetry),
+    # parity-dependent via (-1)**rep_unit, so this is correct for any
+    # rep_unit rather than only the one currently hardcoded in the file.
+    biotin_z_sign = (-1) ** rep_unit
+    l_biotin = np.array(full_peg_M_H[0]) + np.array([0,-B_y_d, biotin_z_sign * B_z_d])
+    r_biotin = np.array(full_peg_M_H[-1]) + np.array([0,B_y_d, biotin_z_sign * B_z_d])
     full_fib = np.vstack([
         l_biotin,
         full_peg_M_H,
@@ -139,6 +173,15 @@ initial_cons_pos = np.array(
 # replace the interim force parameters below are derived at a state point -
 # the all-atom reference states should bracket the one simulated here.
 #
+# (A 2.0uM alternative was tested and measured: raising concentration is the
+# strongest, and only genuinely free, lever on percolation odds within a
+# fixed particle/runtime budget - distance-to-close scales as [fibril]^(-1/3)
+# - and it costs nothing since N_FIBRIL/N_STREP stay fixed, only the cylinder
+# shrinks. It raised the fraction of biotin ends within diffusive reach of a
+# site from 18.8% to 41.8%, but the resulting connected cluster only reached
+# ~5 of 600 Strep_cent nodes - a real but incremental effect, not a fix - so
+# 0.5uM was kept.)
+#
 # Sizing is on the SOLUTION volume (the cylindrical wall's interior, where the
 # fibrils and streptavidin actually are), not the cube:
 #     V_cyl = pi R^2 H = N_FIBRIL / (N_A * 0.5e-6 mol/L) = 6.64e8 nm^3
@@ -152,26 +195,35 @@ initial_cons_pos = np.array(
 # the periodic images are never reachable. That, not box size alone, is what
 # removes the fibril self-image problem: a fibril is up to ~584nm long, far
 # more than L/2, so this model would be unusable with real PBC.
+#
+# fibril_relative_pos() itself never references the cylinder - it only builds
+# a fibril's LOCAL bead template, centred on the origin. The cylinder flows
+# entirely through these two constants -> L -> randomise_positions() ->
+# _sample_cylinder_center() -> the wall geometry below, so changing them here
+# is sufficient; nothing in fibril_relative_pos needs to change.
 CYL_RADIUS = 473.0        # nm, cylindrical wall (Eppendorf interior) - the
 CYL_HALF_HEIGHT = 473.0   # nm, wall itself is a separate follow-up
 WALL_BOX_MARGIN = 20.0    # nm, > max r_cut so no particle ever sees an image
 L = 2 * (CYL_RADIUS + WALL_BOX_MARGIN)  # 986 nm
 
 # ---------------------------------------------------------------------------
-# randomised placement of fibrils and streptavidin cores in the box
+# randomised placement of fibrils and streptavidin cores in the cylinder
 # ---------------------------------------------------------------------------
 # N chosen to hit 0.5 uM while keeping the run inside a ~2 day budget on an
-# RTX 5090: this gives ~99,600 particles (2.0x the previous 49,963), which
-# scales to roughly 0.9-2.3 days for the 150M step run. N_FIBRIL=300 would
-# hit 0.5 uM too but at ~145,600 particles (1.3-3.5 days), over budget in the
-# pessimistic case. Placement was verified to converge at all of these.
-#
-# NOTE: once the cylindrical wall exists, randomise_positions must sample the
-# CYLINDER interior rather than the box, or objects land in the box corners
-# outside the wall and are ejected on step 0. sample_strep-biotin_sim_fixed.py
-# already does cylinder-interior sampling and is the pattern to copy.
+# RTX 5090: ~99,600 particles, scaling to roughly 0.9-2.3 days for the 150M
+# step run. The Strep:fibril ratio (currently 3:1) was checked directly
+# against 2:1 and 4:1 (at a higher, since-reverted test concentration) and
+# found not to matter - the resulting connected cluster size changes by well
+# under the run-to-run noise - so it was left alone rather than retuned.
 N_FIBRIL = 200
 N_STREP = 600
+
+# Single source of truth for every random draw in this file (fibril-length
+# distribution, randomise_positions' placement/orientation rng, and HOOMD's
+# own seed for thermalize_particle_momenta + Langevin noise) - previously
+# three separate hardcoded 0s. Change this one value to get an independent
+# replica; everything else in the file derives from it.
+SIMULATION_SEED = 0
 
 REP_UNIT_PER_ARM = 68  # PEG repeat units per arm - same for every fibril
 
@@ -560,7 +612,7 @@ def randomise_positions(n_hets_per_fibril, n_strep, box_L, cyl_radius, cyl_half_
     # box_L is used only for the final sanity check below (the cylinder must
     # fit inside the box with room for the wall margin); cyl_radius/
     # cyl_half_height are the actual placement volume, matching the
-    # cylindrical wall (CYL_RADIUS/CYL_HALF_HEIGHT) the 0.5uM state point was
+    # cylindrical wall (CYL_RADIUS/CYL_HALF_HEIGHT) the state point above was
     # sized against.
     rng = np.random.default_rng(seed)
 
@@ -583,21 +635,51 @@ def randomise_positions(n_hets_per_fibril, n_strep, box_L, cyl_radius, cyl_half_
         # length, rather than every fibril sharing one fixed template.
         _, fib_template, fib_typeid = fibril_relative_pos(n_hets, REP_UNIT_PER_ARM)
 
-        # Furthest any bead sits from this fibril's placement reference
-        # point. The centre is held this far inside the wall so no bead
-        # lands outside the box - a per-particle wrap would fold isolated
-        # beads onto the opposite face and tear the chain apart, so it is
-        # prevented rather than patched. Recomputed per fibril since length
-        # (and therefore this margin) now varies fibril to fibril.
+        # A fibril can only fit at all if it fits along the cylinder's longest
+        # direction - beyond that, whether a given orientation fits is decided
+        # per-orientation inside the loop.
         fib_half_extent = np.max(np.linalg.norm(fib_template, axis=1))
-        fib_radius_bound = cyl_radius - fib_half_extent
-        fib_height_bound = cyl_half_height - fib_half_extent
-        if fib_radius_bound <= 0 or fib_height_bound <= 0:
+        if fib_half_extent > max(cyl_radius, cyl_half_height):
             raise ValueError(f"cylinder too small to hold a fibril with {n_hets} Het-s beads")
 
+        # Orientation is drawn FIRST, then the centre is bounded by that
+        # orientation's ACTUAL extents. Bounding by fib_half_extent instead (a
+        # sphere of ~half the fibril length, ~263nm here) applies the
+        # worst-case orientation's margin in every direction at once, which
+        # confined fibril centres to r <= 210nm of a 473nm cylinder - only
+        # ~9% of its volume - while streptavidin (margin 3.78nm) filled the
+        # whole thing. That made the system radially inhomogeneous: measured
+        # biotin-end density fell ~12x from the axis to the wall while
+        # streptavidin stayed flat, so the nominal 0.5uM state point did not
+        # describe the material anywhere in the cylinder. A fibril pointing
+        # along z only needs its length as clearance in z, not radially, and
+        # bounding it that way recovers ~2.5x the accessible volume.
+        #
+        # The triangle inequality is what makes the per-axis bounds safe:
+        # |bead_xy| <= |centre_xy| + |rotated_bead_xy| <= r_bound + radial
+        # extent = cyl_radius, and likewise in z, so no bead can leave the
+        # cylinder however the fibril is turned.
         for _ in range(max_attempts):
-            center = _sample_cylinder_center(rng, fib_radius_bound, fib_height_bound)
-            world = fib_template @ quat_to_rotmat(random_unit_quaternion(rng)).T + center
+            rotated = fib_template @ quat_to_rotmat(random_unit_quaternion(rng)).T
+            radial_extent = np.max(np.linalg.norm(rotated[:, :2], axis=1))
+            axial_extent = np.max(np.abs(rotated[:, 2]))
+            r_bound = cyl_radius - radial_extent
+            h_bound = cyl_half_height - axial_extent
+            if r_bound <= 0 or h_bound <= 0:
+                continue  # this orientation cannot fit anywhere - redraw it
+            # Accept the orientation in proportion to the volume it can
+            # actually reach (V ~ r_bound^2 * h_bound). Without this,
+            # drawing orientation and position independently would
+            # over-represent the cramped orientations: an axial fibril has
+            # ~2.2x the accessible volume of an in-plane one here, so equal
+            # orientation sampling would bias the initial structure. That
+            # matters more than usual in this system because fibrils barely
+            # diffuse over the run (~4nm RMS in 3us), so the initial
+            # orientation distribution is essentially the one being measured.
+            if rng.random() > (r_bound ** 2 * h_bound) / (cyl_radius ** 2 * cyl_half_height):
+                continue
+            center = _sample_cylinder_center(rng, r_bound, h_bound)
+            world = rotated + center
             p0, p1 = world[0], world[-1]
             if any(segment_segment_dist(p0, p1, q0, q1) < 2 * FIBRIL_EXCL_RADIUS
                    for q0, q1 in fibril_segments):
@@ -715,7 +797,7 @@ init = gsd.hoomd.Frame()
 # Het-s counts supplied by the rest of the project. Swap this out for that
 # once it exists; randomise_positions only needs the resulting list/array.
 _n_hets_per_fibril = np.maximum(
-    1, np.round(np.random.default_rng(0).normal(343, 20, size=N_FIBRIL))
+    1, np.round(np.random.default_rng(SIMULATION_SEED).normal(343, 20, size=N_FIBRIL))
 ).astype(int)
 
 (
@@ -723,7 +805,8 @@ _n_hets_per_fibril = np.maximum(
     bond_group, bond_typeid,
     angle_group, angle_typeid,
     dihedral_group, dihedral_typeid,
-) = randomise_positions(_n_hets_per_fibril, N_STREP, L, CYL_RADIUS, CYL_HALF_HEIGHT)
+) = randomise_positions(_n_hets_per_fibril, N_STREP, L, CYL_RADIUS, CYL_HALF_HEIGHT,
+                          seed=SIMULATION_SEED)
 init.particles.N = position.shape[0]
 init.particles.position = position
 init.particles.types = TYPES
@@ -765,7 +848,7 @@ with gsd.hoomd.open(name="full_init.gsd", mode = "w") as f:
 
 
 gpu = hoomd.device.GPU()
-simulation = hoomd.Simulation(device=gpu, seed = 0)
+simulation = hoomd.Simulation(device=gpu, seed=SIMULATION_SEED)
 simulation.create_state_from_gsd(filename="full_init.gsd")
 
 # calcaulating orientation of constituents so their orientation matches the
@@ -988,7 +1071,7 @@ _set_attr("Strep_cons", "PEG", STREP_CONS, PEG, 0.5)
 
 # ---------------------------------------------------------------------------
 # Cylindrical wall (Eppendorf-tube interior) - confines the solution to the
-# CYL_RADIUS/CYL_HALF_HEIGHT cylinder that the 0.5uM state point was actually
+# CYL_RADIUS/CYL_HALF_HEIGHT cylinder that the state point above was actually
 # sized against (see the L/N_FIBRIL derivation above). This is what makes
 # "no periodic boundaries" physically real rather than just a large box: the
 # WCA wall keeps every particle away from the box faces, so the periodic
@@ -1048,10 +1131,23 @@ har_bond.params["HETS-HETS"] = dict(k=26.002*602.164, r0=1.4) # conversion from 
 # all-atom use b0=0.322nm with k=7000 (Rossi) where this file uses the
 # Lee-type 0.33/17000. Both are literature; moving PEG-PEG to 7000 would
 # raise the timestep ceiling by ~1.6x, since that bond is the limiting mode.
-BOND_K_PLACEHOLDER = 15000  # kJ/mol/nm^2
-har_bond.params["Biotin-PEG"] = dict(k=BOND_K_PLACEHOLDER, r0=BIOTIN_RADIUS + PEG_RADIUS)
-har_bond.params["PEG-Malemide"] = dict(k=BOND_K_PLACEHOLDER, r0=PEG_RADIUS + MALEMIDE_RADIUS)
-har_bond.params["Malemide-HETS"] = dict(k=BOND_K_PLACEHOLDER, r0=MALEMIDE_RADIUS + HETS_RADIUS)
+# r0 here is the researched chemistry-based bond length for each linkage
+# (not the tangent-sphere radius-sum convention used elsewhere in this file -
+# these are close to, but not identical to, BIOTIN_RADIUS+PEG_RADIUS etc).
+# k=25000 for all three: stiffer than either literature bond (PEG-PEG 17000,
+# HETS-HETS 15657), i.e. fractional bond fluctuation of only 1.0-2.0% of r0
+# versus PEG-PEG's 3.7%. This does not threaten the timestep - PEG-PEG stays
+# the limiting mode at 226fs (Biotin-PEG/PEG-Malemide/Malemide-HETS periods
+# are 246/230/468fs at k=25000, checked against their reduced masses).
+#
+# INTERIM - seed for MSIBI refinement, not a fitted number; MSIBI measures
+# these bond-length distributions directly (Boltzmann inversion of that
+# distribution is exactly how a bonded term is derived), and solvent barely
+# enters this estimate either way since bonded distributions are
+# intramolecular and only weakly perturbed by hydration.
+har_bond.params["Biotin-PEG"] = dict(k=25000, r0=0.55)
+har_bond.params["PEG-Malemide"] = dict(k=25000, r0=0.50)
+har_bond.params["Malemide-HETS"] = dict(k=25000, r0=1.02)
 
 # angular potnentials. Two different angle-force classes are used here
 # (CosineSquared for most types, Harmonic for the two exactly-180-degree
@@ -1071,88 +1167,77 @@ cossqr_angle.params.default = dict(k=0, t0=0)
 cossqr_angle.params["PEG-PEG-PEG"] = dict(k=85, t0=np.radians(130))
 
 J_per_rad2 = 6.08 * (10 ** (-17))
-avogadros = 6.02 * (10 ** (23))
+avogadros = 6.02214076 * (10 ** (23))  # precise value; previous 6.02e23 gave
+                                        # 36601.6, this gives 36614.6
 har_angle = hoomd.md.angle.Harmonic()
 har_angle.params.default = dict(k=0, t0=0)
 har_angle.params["HETS-HETS-HETS"] = dict(k=(J_per_rad2 * avogadros)/1000, t0=math.pi)
 
-# INTERIM - replace with MS-IBI tables (hoomd.md.angle.Table). t0 is exact -
-# measured from fibril_relative_pos's own geometry (both ends' junctions,
-# averaged for PEG-Malemide-HETS since the two ends don't land at quite the
-# same angle: 150 vs 180 degrees). Only k is estimated.
+# INTERIM - replace with MS-IBI tables (hoomd.md.angle.Table); seeds for
+# MSIBI refinement, not fitted numbers.
 #
-# CosineSquared vs Harmonic: U_cossq(theta) = 1/2 k (cos(theta)-cos(t0))^2
-# has local stiffness d^2U/dtheta^2 at theta=t0 equal to k*sin^2(t0), not
-# just k - it vanishes as t0 -> 180 degrees (exactly zero AT 180, since
-# sin(180)=0), a genuinely degenerate equilibrium, not just "softer".
-# Biotin-PEG-PEG sits exactly at t0=180 degrees, so it keeps Harmonic, same
-# reasoning as HETS-HETS-HETS above. The other three (155-165 degrees) are
-# not at that pole, so CosineSquared is well-behaved and is the standard
-# coarse-grained choice (HOOMD's own docs: "CosineSquared is used in the
-# gromos96 and MARTINI force fields").
-#
-# k is specified via the EFFECTIVE stiffness k*sin^2(t0) rather than the
-# nominal k, because a single nominal value produces wildly different physics
-# depending on where t0 sits. At the previous uniform k=85 the effective
-# stiffnesses were 15.2 / 5.7 / 5.7 against the PEG backbone's 49.9 - a 9x
-# spread that was an artifact of the functional form, not a modelling
-# decision, and one that made junctions onto the heavy maleimide/HETS beads
-# FLOPPIER than the PEG chain they hang off, which is backwards. Anchoring
-# every junction to k_eff = 49.9 (the effective stiffness of PEG-PEG-PEG, the
-# only angle here with a literature value) makes the choice explicit. The
-# resulting large nominal numbers are sin^2(t0) compensation, not extra
-# stiffness, and were checked against the timestep: the resulting mode
-# periods are 2678-10992fs, far from the PEG-PEG bond's limiting 226fs.
-ANGLE_K_EFF = 85 * math.sin(math.radians(130)) ** 2  # 49.9 kJ/mol/rad^2
+# Biotin-PEG-PEG and PEG-PEG-Malemide simply INHERIT PEG-PEG-PEG's literature
+# parameters, rather than getting separate estimated values: an angle at a
+# PEG bead is set by PEG's own chemistry and barely cares what sits two beads
+# further away, so there is one measured angle in this chain, not three. This
+# also retires the previous Biotin-PEG-PEG special case (Harmonic at t0=180,
+# justified by "180 is degenerate for CosineSquared") - the geometry actually
+# builds that junction at 130 degrees, so that justification did not hold in
+# the first place.
+cossqr_angle.params["Biotin-PEG-PEG"] = dict(k=85, t0=np.radians(130))
+cossqr_angle.params["PEG-PEG-Malemide"] = dict(k=85, t0=np.radians(130))
 
-def _cossq_k(t0_deg):
-    return ANGLE_K_EFF / math.sin(math.radians(t0_deg)) ** 2
+# PEG-Malemide-HETS: t0=120 degrees keeps CosineSquared well away from its
+# degenerate pole (sin^2(120)=0.75, no k compensation needed, unlike the
+# near-180-degree junctions this replaces).
+cossqr_angle.params["PEG-Malemide-HETS"] = dict(k=50, t0=np.radians(120))
 
-# Biotin-PEG-PEG was k=20000, which is ~400x the value below and was flat-out
-# wrong: at 8072 kT/rad^2 it allowed an RMS angular fluctuation of 0.64
-# degrees, i.e. a rigid rod, for what is physically a flexible PEG-biotin
-# linker. All-atom CHARMM C35r gives PEG a persistence length of 3.7 A
-# (experiment: 3.7-3.8 A); k=20000 implies a local persistence length of
-# ~2664 nm - longer than the entire 530nm fibril. It was also, silently, the
-# timestep-limiting mode in the whole system (157fs period, tighter than the
-# PEG-PEG bond's 226fs), so removing it relaxes the dt ceiling.
-har_angle.params["Biotin-PEG-PEG"] = dict(k=ANGLE_K_EFF, t0=math.radians(180))
-cossqr_angle.params["PEG-PEG-Malemide"] = dict(k=_cossq_k(155), t0=math.radians(155))
-cossqr_angle.params["PEG-Malemide-HETS"] = dict(k=_cossq_k(165), t0=math.radians(165))
-cossqr_angle.params["Malemide-HETS-HETS"] = dict(k=_cossq_k(165), t0=math.radians(165))
+# Malemide-HETS-HETS: Malemide reacts with Cystine mutation on beta solenoids 
+# only on the ends of prion chains, so bond angle is set to 165 degrees, modelled
+# as a harmmonic angle force
+har_angle.params["Malemide-HETS-HETS"] = dict(k=150, t0=np.radians(165))
 
+# Biotin-PEG-PEG-PEG and PEG-PEG-PEG-Malemide INHERIT the literature
+# PEG-PEG-PEG-PEG 4-term set on every dihedralP1-P4 object, rather than
+# getting a separate estimated value: torsion is about rotation around the
+# CENTRAL bond (the 2nd-3rd bead), which for both of these is a PEG-PEG bond
+# - identical to PEG-PEG-PEG-PEG - and only a terminal substituent differs.
 dihedralP1 = hoomd.md.dihedral.Periodic()
 dihedralP1.params["PEG-PEG-PEG-PEG"] = dict(k=1.96, d=1, n=1, phi0=np.radians(180))
+dihedralP1.params["Biotin-PEG-PEG-PEG"] = dict(k=1.96, d=1, n=1, phi0=np.radians(180))
+dihedralP1.params["PEG-PEG-PEG-Malemide"] = dict(k=1.96, d=1, n=1, phi0=np.radians(180))
 dihedralP1.params.default = dict(k=0, d=0, n=0, phi0=0)
 
 dihedralP2 = hoomd.md.dihedral.Periodic()
 dihedralP2.params["PEG-PEG-PEG-PEG"] = dict(k=0.18, d=1, n=2, phi0=np.radians(0))
+dihedralP2.params["Biotin-PEG-PEG-PEG"] = dict(k=0.18, d=1, n=2, phi0=np.radians(0))
+dihedralP2.params["PEG-PEG-PEG-Malemide"] = dict(k=0.18, d=1, n=2, phi0=np.radians(0))
 dihedralP2.params.default = dict(k=0, d=0, n=0, phi0=0)
 
 dihedralP3 = hoomd.md.dihedral.Periodic()
 dihedralP3.params["PEG-PEG-PEG-PEG"] = dict(k=0.33, d=1, n=3, phi0=np.radians(0))
+dihedralP3.params["Biotin-PEG-PEG-PEG"] = dict(k=0.33, d=1, n=3, phi0=np.radians(0))
+dihedralP3.params["PEG-PEG-PEG-Malemide"] = dict(k=0.33, d=1, n=3, phi0=np.radians(0))
 dihedralP3.params.default = dict(k=0, d=0, n=0, phi0=0)
 
 dihedralP4 = hoomd.md.dihedral.Periodic()
 dihedralP4.params["PEG-PEG-PEG-PEG"] = dict(k=0.12, d=1, n=4, phi0=np.radians(0))
+dihedralP4.params["Biotin-PEG-PEG-PEG"] = dict(k=0.12, d=1, n=4, phi0=np.radians(0))
+dihedralP4.params["PEG-PEG-PEG-Malemide"] = dict(k=0.12, d=1, n=4, phi0=np.radians(0))
 dihedralP4.params.default = dict(k=0, d=0, n=0, phi0=0)
 
-# INTERIM - replace with MS-IBI tables (hoomd.md.dihedral.Table). No
-# literature Fourier decomposition exists for these 4 junction dihedral types
-# (unlike PEG-PEG-PEG-PEG's real 4-term sum above, split across
-# dihedralP1-P4). Lowest-risk of the interim values: k sits inside the range
-# of the real PEG terms already in this file. Rather than leaving them at the
-# k=0 default (i.e. no torsional preference at all), a single n=1 term is
-# added here on dihedralP4 as a minimal placeholder restraint - k borrows
-# the same order of magnitude as the real PEG terms above (0.12-1.96); d=1,
-# phi0=0 gives one cis-eclipsed minimum, an arbitrary but harmless choice
-# pending real data. dihedralP1-P3 keep these types at their k=0 default,
-# so the placeholder torsion is contributed once, not quadruple-counted.
-DIHEDRAL_K_PLACEHOLDER = 0.5  # kJ/mol
-dihedralP4.params["Biotin-PEG-PEG-PEG"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
-dihedralP4.params["PEG-PEG-PEG-Malemide"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
-dihedralP4.params["PEG-PEG-Malemide-HETS"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
-dihedralP4.params["PEG-Malemide-HETS-HETS"] = dict(k=DIHEDRAL_K_PLACEHOLDER, d=1, n=1, phi0=np.radians(0))
+# INTERIM - replace with MS-IBI tables (hoomd.md.dihedral.Table). Seeds for
+# MSIBI refinement, not fitted numbers. n=3 for both, the natural periodicity
+# for rotation about a bond between sp3-like centres (vs the arbitrary n=1
+# used previously). Carried on dihedralP3 alongside the real PEG n=3 term,
+# rather than a new object, since HOOMD sums contributions across every
+# force in integrator.forces regardless of which object they're declared on.
+#
+# Malemide-HETS-HETS-HETS and HETS-HETS-HETS-HETS are still excluded - 3
+# consecutive HETS beads are exactly collinear (see DIHEDRAL_TYPES section
+# above), a geometric degeneracy no parameter choice fixes.
+dihedralP3.params["PEG-PEG-Malemide-HETS"] = dict(k=0.4, d=1, n=3, phi0=np.radians(0))
+dihedralP3.params["PEG-Malemide-HETS-HETS"] = dict(k=0.3, d=1, n=3, phi0=np.radians(0))
 
 integrator.forces.append(patches)
 integrator.forces.append(lj)       # repulsive cores, every pair
@@ -1175,7 +1260,7 @@ integrator.forces.append(dihedralP4)
 # Rigid constraint and are never separately integrated.
 # ---------------------------------------------------------------------------
 # Same unit convention used throughout this file (length=nm, mass=g/mol,
-# energy=kJ/mol - see BOND_K_PLACEHOLDER/har_angle above), so KB comes out in
+# energy=kJ/mol - see har_bond/har_angle above), so KB comes out in
 # kJ/(mol*K) and time in ps for free, matching
 # sample_strep-biotin_sim_fixed.py's convention.
 KB = 0.0083144621  # kJ/(mol*K)
@@ -1212,6 +1297,67 @@ langevin.gamma_r["Strep_cent"] = (8 * math.pi * eta * STREP_EXCL_RADIUS ** 3,) *
 
 integrator.methods.append(langevin)
 
+simulation.operations.integrator = integrator
+
+# ---------------------------------------------------------------------------
+# Energy minimisation, BEFORE thermalising.
+#
+# fibril_relative_pos builds an idealised, perfectly planar geometry whose
+# bonded coordinates do not sit at the force field's minima: junction bonds
+# start 0.02-0.03nm off their r0 (2-4.5 kT each), the PEG angles are built at
+# 160 degrees against t0=130, and every dihedral starts at exactly 180 degrees
+# while the 4-term PEG series minimises near -42 degrees. Measured, that is
+# ~195,000 kJ/mol of potential energy at t=0, of which minimisation removes
+# ~130,000 (converges to ~65,000 in ~1400 steps). Running the production
+# integrator straight from that state would spend the opening of the
+# trajectory violently relaxing built-in strain rather than sampling, and
+# would put a large artificial energy pulse into the Langevin thermostat.
+#
+# FIRE needs its own integrator, and HOOMD allows a Rigid object (and a given
+# force) to belong to only ONE integrator at a time - constructing FIRE while
+# `integrator` still holds them raises
+# "Rigid object can only belong to one integrator". So the forces and the
+# rigid constraint are handed over to FIRE and handed back afterwards.
+#
+# ConstantVolume with no thermostat is the right method here: FIRE needs plain
+# NVE dynamics to damp against, and using Langevin would inject exactly the
+# random forces minimisation is trying to remove. dt is 4x smaller than the
+# production dt for stability while forces are still large.
+_production_forces = list(integrator.forces)
+integrator.forces.clear()
+integrator.rigid = None
+
+fire = hoomd.md.minimize.FIRE(
+    dt=0.005,
+    force_tol=1e-2,
+    angmom_tol=1e-2,
+    energy_tol=1e-7,
+    integrate_rotational_dof=True,
+    forces=_production_forces,
+    methods=[hoomd.md.methods.ConstantVolume(filter=rigid_centers_and_free)],
+    rigid=rigid,
+)
+simulation.operations.integrator = fire
+
+_MINIMISE_CHUNK = 200
+_MINIMISE_MAX_STEPS = 20000  # ~14x the ~1400 steps this needed when measured
+for _ in range(_MINIMISE_MAX_STEPS // _MINIMISE_CHUNK):
+    if fire.converged:
+        break
+    simulation.run(_MINIMISE_CHUNK)
+if not fire.converged:
+    raise RuntimeError(
+        f"FIRE did not converge in {_MINIMISE_MAX_STEPS} steps - the initial "
+        "geometry is further from the force field's minima than expected, "
+        "check for a bonded parameter that disagrees with fibril_relative_pos"
+    )
+
+# hand the forces and the rigid constraint back to the production integrator
+fire.forces.clear()
+fire.rigid = None
+integrator.rigid = rigid
+for _f in _production_forces:
+    integrator.forces.append(_f)
 simulation.operations.integrator = integrator
 
 trajectory_writer = hoomd.write.GSD(

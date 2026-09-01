@@ -1,0 +1,34 @@
+## Bond lengths (harmonic: k in kJ/mol/nm², r₀ in nm)
+
+| Bond | k | r₀ |
+|---|---|---|
+| PEG–PEG | 17,000 | 0.33 |
+| Biotin–PEG | 25,000 | 0.55 |
+| PEG–Maleimide | 25,000 | 0.50 |
+| Maleimide–HET-s | 25,000 | 1.02 |
+| HET-s–HET-s | 15,657 | 1.4 |
+
+## Bond angles
+
+| Angle | Style | k | θ₀ |
+|---|---|---|---|
+| PEG–PEG–PEG | cos² | 85 kJ/mol | 130° |
+| Biotin–PEG–PEG | cos² | 85 kJ/mol | 130° |
+| PEG–PEG–Maleimide | cos² | 85 kJ/mol | 130° |
+| PEG–Maleimide–HET-s | cos² | 50 kJ/mol | 120° |
+| Maleimide–HET-s–HET-s | harmonic | 150 kJ/mol/rad² | 165° |
+| HET-s–HET-s–HET-s | harmonic | 36,614 kJ/mol/rad² | 180° |
+
+## Dihedrals (HOOMD Periodic: U = k[1 + d·cos(nφ − φ₀)])
+
+| Dihedral | Terms |
+|---|---|
+| PEG–PEG–PEG–PEG | k=1.96,d=1,n=1,φ₀=180°; k=0.18,d=1,n=2,φ₀=0°; k=0.33,d=1,n=3,φ₀=0°; k=0.12,d=1,n=4,φ₀=0° |
+| Biotin–PEG–PEG–PEG | same 4-term set as PEG–PEG–PEG–PEG |
+| PEG–PEG–PEG–Maleimide | same 4-term set as PEG–PEG–PEG–PEG |
+| PEG–PEG–Maleimide–HET-s | k=0.4, d=1, n=3, φ₀=0° |
+| PEG–Maleimide–HET-s–HET-s | k=0.3, d=1, n=3, φ₀=0° |
+
+**Excluded (no dihedral defined — collinear/degenerate):** Maleimide–HET-s–HET-s–HET-s, HET-s–HET-s–HET-s–HET-s
+
+All junction/estimated values (everything except the two literature rows in each table) are seed parameters for MSIBI refinement, not fitted numbers.
