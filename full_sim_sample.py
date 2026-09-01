@@ -12,6 +12,7 @@
 # 1.4 nm in diamter for het-s so 0.7 nm radius
 
 import math
+import datetime
 #import pandas as pd
 import gsd.hoomd
 import hoomd
@@ -1327,11 +1328,33 @@ _production_forces = list(integrator.forces)
 integrator.forces.clear()
 integrator.rigid = None
 
+# energy_tol=1e-7 (an earlier value here) failed to converge in 20000 steps
+# on a real GPU run, while converging fine in ~1400 steps on this file's own
+# CPU verification runs. Root cause: this system's converged PE is
+# ~65,000 kJ/mol, and consumer GPUs (RTX 5090 included) run single/mixed
+# precision by default (weak FP64 throughput), whose quantization step AT
+# that PE magnitude is ~0.008 kJ/mol - about 77,000x larger than 1e-7.
+# Delta-PE between steps can never quantize below that floor on such a
+# build, so the criterion was likely unreachable there in floating point,
+# not just slow - consistent with converging on (presumably double-
+# precision) CPU but not on GPU.
+#
+# force_tol/angmom_tol were NOT the problem - confirmed directly: with them
+# left at their original values, only energy_tol loosened, minimisation
+# still converges at the same ~1400 steps to the same ~65,000 kJ/mol PE as
+# before. A first attempt that loosened all three together (to 1e-1/1e-1/
+# 1e-3) "converged" at step 1400 too, but to PE=183,900 - a FALSE early
+# stop, not real relaxation (measured separately: |delta PE|/N fluctuates
+# noisily between ~4e-3 and ~2e-1 even mid-descent, well before any true
+# minimum, so a loose energy_tol can be satisfied by a transient plateau
+# rather than genuine convergence). energy_tol=1e-4 is the value that
+# empirically avoids both failure modes: reachable well above the float32
+# floor above, and tight enough to still land at the real minimum.
 fire = hoomd.md.minimize.FIRE(
     dt=0.005,
     force_tol=1e-2,
     angmom_tol=1e-2,
-    energy_tol=1e-7,
+    energy_tol=1e-4,
     integrate_rotational_dof=True,
     forces=_production_forces,
     methods=[hoomd.md.methods.ConstantVolume(filter=rigid_centers_and_free)],
@@ -1341,8 +1364,10 @@ simulation.operations.integrator = fire
 
 _MINIMISE_CHUNK = 200
 _MINIMISE_MAX_STEPS = 20000  # ~14x the ~1400 steps this needed when measured
+print("Energy Minimisation Start")
 for _ in range(_MINIMISE_MAX_STEPS // _MINIMISE_CHUNK):
     if fire.converged:
+        print("Energy Minimisation completed sucessfully")
         break
     simulation.run(_MINIMISE_CHUNK)
 if not fire.converged:
@@ -1367,6 +1392,41 @@ trajectory_writer = hoomd.write.GSD(
 )
 
 simulation.operations.writers.append(trajectory_writer)
+
+# ---------------------------------------------------------------------------
+# Estimated time remaining, printed to the terminal periodically during the
+# production run. Standard HOOMD pattern: a small class carrying a
+# hoomd.logging.log-decorated property, added to a Logger and read out by a
+# Table writer - not something specific to Ubuntu, this is the same on any
+# platform HOOMD runs on (Linux only per CLAUDE.md's own install notes).
+#
+# Note the Loggable metaclass, not requires_run=True: that flag is for
+# loggables that are themselves attached HOOMD objects (forces, computes)
+# and expect an internal _attached flag Status does not have - using it here
+# raised AttributeError.
+# ---------------------------------------------------------------------------
+class Status(metaclass=hoomd.logging.Loggable):
+    def __init__(self, simulation):
+        self.simulation = simulation
+
+    @hoomd.logging.log(category="string")
+    def etr(self):
+        tps = self.simulation.tps
+        if tps == 0:
+            return "n/a"
+        remaining_steps = self.simulation.final_timestep - self.simulation.timestep
+        return str(datetime.timedelta(seconds=remaining_steps / tps))
+
+status = Status(simulation)
+status_logger = hoomd.logging.Logger(categories=["scalar", "string"])
+status_logger.add(simulation, quantities=["timestep", "tps"])
+status_logger.add(status, quantities=["etr"])
+# Every 100000 steps (not the trajectory writer's 15000) - frequent enough to
+# see live progress without spamming the terminal over a multi-day run.
+status_table = hoomd.write.Table(
+    trigger=hoomd.trigger.Periodic(50000), logger=status_logger
+)
+simulation.operations.writers.append(status_table)
 
 simulation.state.thermalize_particle_momenta(filter=hoomd.filter.All(), kT=kT)
 simulation.run(150000000) # for 3 microseconds, dt of 2 femotseconds
