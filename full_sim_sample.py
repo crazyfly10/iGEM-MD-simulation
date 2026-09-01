@@ -224,7 +224,7 @@ N_STREP = 600
 # own seed for thermalize_particle_momenta + Langevin noise) - previously
 # three separate hardcoded 0s. Change this one value to get an independent
 # replica; everything else in the file derives from it.
-SIMULATION_SEED = 0
+SIMULATION_SEED = 1
 
 REP_UNIT_PER_ARM = 68  # PEG repeat units per arm - same for every fibril
 
@@ -1417,10 +1417,18 @@ class Status(metaclass=hoomd.logging.Loggable):
         remaining_steps = self.simulation.final_timestep - self.simulation.timestep
         return str(datetime.timedelta(seconds=remaining_steps / tps))
 
+    @hoomd.logging.log(category="string")
+    def date(self):
+        # wall-clock date this line was printed, DD/MM/YY - not the same as
+        # etr (time REMAINING); useful on a multi-day run to see at a glance
+        # when a given line was logged without cross-referencing a separate
+        # terminal timestamp.
+        return datetime.datetime.now().strftime("%d/%m/%y")
+
 status = Status(simulation)
 status_logger = hoomd.logging.Logger(categories=["scalar", "string"])
 status_logger.add(simulation, quantities=["timestep", "tps"])
-status_logger.add(status, quantities=["etr"])
+status_logger.add(status, quantities=["etr", "date"])
 # Every 100000 steps (not the trajectory writer's 15000) - frequent enough to
 # see live progress without spamming the terminal over a multi-day run.
 status_table = hoomd.write.Table(
